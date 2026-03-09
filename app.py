@@ -78,11 +78,9 @@ def init_db():
 
 init_db()
 
-# [핵심] 게스트 승급 시 과거 전적을 역추적하여 승점을 재계산해주는 소급 로직
 def retro_calculate_points_for_user(user_name):
     conn = sqlite3.connect('hote_tennis.db')
     c = conn.cursor()
-    # 기존 엑셀 업로드 기록은 제외하고, 자동 승점만 초기화 후 재계산
     c.execute("DELETE FROM points_log WHERE name=? AND source_id != 'EXCEL_IMPORT'", (user_name,)) 
     
     mh_df = pd.read_sql_query("SELECT * FROM match_history WHERE winner != '입력 대기' AND winner != '취소'", conn)
@@ -814,20 +812,37 @@ elif menu == "관리자":
     if st.session_state['admin_logged_in']:
         if st.button("로그아웃"): st.session_state['admin_logged_in'] = False; st.rerun()
         
-        # [수정 1] 결원 대체 필터링 (코트 배정자만 표시 및 세로 배치)
+        # [데이터 초기화 기능]
+        with st.expander("⚠️ 데이터 초기화 (테스트 기록 삭제)", expanded=False):
+            st.warning("지금까지 입력된 모든 대진표, 경기 결과, 승점(과거 엑셀 데이터 포함)이 영구적으로 삭제됩니다. (회원 명부와 승점 규칙은 유지됩니다)")
+            confirm_reset = st.checkbox("네, 모든 데이터를 삭제하는 것에 동의합니다.")
+            if confirm_reset:
+                if st.button("🔥 전체 데이터 초기화 실행", type="primary", use_container_width=True):
+                    conn = sqlite3.connect('hote_tennis.db')
+                    c = conn.cursor()
+                    c.execute("DELETE FROM match_history")
+                    c.execute("DELETE FROM points_log")
+                    c.execute("DELETE FROM settings WHERE key IN ('active_match_date', 'active_tournament_json', 'active_gen_params_json')")
+                    conn.commit(); conn.close()
+                    st.session_state['tournament_data'] = {}
+                    st.session_state['gen_params'] = None
+                    st.success("테스트 데이터가 완벽하게 삭제되었습니다! 이제 새로 시작할 수 있습니다.")
+                    st.rerun()
+                    
         with st.expander("🔄 현장 대진표 수정 (결원 대체)", expanded=False):
             if st.session_state['tournament_data']:
                 round_opts = list(st.session_state['tournament_data'].keys())
                 edit_r = st.selectbox("수정할 라운드 선택", round_opts)
 
                 r_data = st.session_state['tournament_data'][edit_r]
+                
                 playing_names = []
                 for m in r_data['matches']: 
                     playing_names.extend([p['name'] for p in m['team_a']] + [p['name'] for p in m['team_b']])
                 wait_names = [p['name'] for p in r_data['waitlist']]
                 
                 st.markdown("##### 🔄 대체 선수 선택")
-                out_p = st.selectbox("🔽 빠질 사람 (현재 코트 배정자)", playing_names)
+                out_p = st.selectbox("🔽 빠질 사람 (현재 코트 배정자만)", playing_names)
                 
                 valid_waitlisters = [w for w in wait_names if w != out_p]
                 in_options = []
@@ -880,7 +895,6 @@ elif menu == "관리자":
 
                         conn.commit(); conn.close()
                         st.session_state['tournament_data'][edit_r] = r_data
-                        
                         gen_params = st.session_state.get('gen_params')
                         save_active_tournament(st.session_state['match_date'], st.session_state['tournament_data'], gen_params)
                         
@@ -926,7 +940,6 @@ elif menu == "관리자":
                 conn.commit(); st.success("저장 완료!")
             conn.close()
 
-        # [수정 3] 회원 및 게스트 명단 분리, 승급 기능 완벽 구현
         with st.expander("👥 회원 명부 및 관리 (등록/삭제/승급)", expanded=False):
             members_df = get_members()
             reg_df = members_df[members_df['is_guest'] == 0][['name', 'gender', 'base_rating', 'eff_rating']].copy()

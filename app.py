@@ -191,7 +191,7 @@ def get_point_rules():
     return df.set_index('category').to_dict('index')
 
 # ==========================================
-# 2단계: 승점 계산 및 다양성 매칭 알고리즘
+# 2단계: 승점 계산 및 강력한 다양성 매칭 알고리즘
 # ==========================================
 def get_team_type(team):
     genders = [p['gender'] for p in team]
@@ -229,12 +229,12 @@ def assign_points(match_id, match_date, team_a, team_b, result, rules):
             if not p.get('is_guest', False): c.execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", (match_id, p['name'], match_date, pts_b, 1))
     conn.commit(); conn.close()
 
-# [핵심 로직] 과거 팀/상대 추적하여 찢어놓는 알고리즘
+# [핵심] 과거 파트너 및 상대방을 모두 추적하여 찢어놓는 "고인물 방지 알고리즘"
 def generate_single_round(players_df, court_count, match_option, special_data_list, sub_option, current_r_num, all_rounds_data):
     player_dicts = players_df.to_dict('records')
     random.shuffle(player_dicts) 
     
-    # 예약자(고정) 명단 추출 (이들은 대기자 명단에서 제외시키기 위함)
+    # 1. 예약자(고정) 명단 추출 (대기자 명단에서 제외시키기 위함)
     reserved_names = set()
     if match_option == "특정 페어 우선" and special_data_list:
         for pair in special_data_list: reserved_names.update(pair)
@@ -242,7 +242,7 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
         for matchup in special_data_list:
             reserved_names.update(matchup[0]); reserved_names.update(matchup[1])
             
-    # 과거 같은 편, 상대편 파악 (고인물 방지)
+    # 2. 과거 같은편/상대편 100% 추적 시스템
     past_partners = {p['name']: set() for p in player_dicts}
     past_opponents = {p['name']: set() for p in player_dicts}
     for r_num, r_data in all_rounds_data.items():
@@ -257,20 +257,7 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
             for pa in ta:
                 for pb in tb:
                     past_opponents[pa].add(pb); past_opponents[pb].add(pa)
-                    
-    def evaluate_match(ta, tb):
-        # 1. 평점 차이 점수
-        diff = abs(sum(p['eff_rating'] for p in ta) - sum(p['eff_rating'] for p in tb))
-        penalty = 0
-        # 2. 같은 편 또 하면 벌점 50점
-        if ta[1]['name'] in past_partners[ta[0]['name']]: penalty += 50
-        if tb[1]['name'] in past_partners[tb[0]['name']]: penalty += 50
-        # 3. 만났던 상대 또 만나면 벌점 10점
-        for pa in ta:
-            for pb in tb:
-                if pb['name'] in past_opponents[pa['name']]: penalty += 10
-        return diff + penalty
-
+    
     needed_players = court_count * 4
     needed_waitlist = max(0, len(player_dicts) - needed_players)
     
@@ -285,8 +272,8 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
         # 예약자가 아닌 사람을 우선 대기자로 뽑음
         avail_for_wait = [p for p in player_dicts if p['name'] not in reserved_names]
         sorted_by_rest = sorted(avail_for_wait, key=lambda x: rest_counts[x['name']])
-        
         waitlist = sorted_by_rest[:needed_waitlist]
+        
         if len(waitlist) < needed_waitlist:
             rem = needed_waitlist - len(waitlist)
             avail_reserved = [p for p in player_dicts if p['name'] in reserved_names and p not in waitlist]
@@ -294,90 +281,94 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
             
     playing_now = [p for p in player_dicts if p not in waitlist]
     matches = []
-
+    formed_teams = []
+    
+    # [1단계] 특정팀 대결 우선 (아예 매치 자체를 픽스)
     if match_option == "특정팀 대결 우선" and special_data_list:
         for matchup in special_data_list:
             if len(matches) >= court_count: break
-            team_a_names, team_b_names = matchup
-            ta = [p for p in playing_now if p['name'] in team_a_names]
-            tb = [p for p in playing_now if p['name'] in team_b_names]
+            ta_names, tb_names = matchup
+            ta = [p for p in playing_now if p['name'] in ta_names]
+            tb = [p for p in playing_now if p['name'] in tb_names]
             if len(ta) == 2 and len(tb) == 2:
                 matches.append({"team_a": ta, "team_b": tb, "winner": "입력 대기"})
-                playing_now = [p for p in playing_now if p not in ta and p not in tb]
+                for pp in ta + tb: playing_now.remove(pp)
 
-    elif match_option == "특정 페어 우선" and special_data_list:
-        formed_pairs = []
+    # [2단계] 특정 페어 우선 (팀만 묶어두고 나중에 다른 팀과 매칭)
+    if match_option == "특정 페어 우선" and special_data_list:
         for pair in special_data_list:
             team = [p for p in playing_now if p['name'] in pair]
             if len(team) == 2:
-                formed_pairs.append(team)
-                playing_now = [p for p in playing_now if p not in team]
-        
-        # 특정 페어가 2개 이상일 경우, 자기들끼리 대결시킴
-        while len(formed_pairs) >= 2 and len(matches) < court_count:
-            matches.append({"team_a": formed_pairs.pop(0), "team_b": formed_pairs.pop(0), "winner": "입력 대기"})
-        
-        # 1페어만 남았을 경우, 남은 인원 중 가장 적절한(안 만난) 2명을 뽑아서 붙임
-        if len(formed_pairs) == 1 and len(matches) < court_count and len(playing_now) >= 2:
-            ta = formed_pairs.pop(0)
-            best_tb = None
-            best_cost = float('inf')
-            for opp in itertools.combinations(playing_now, 2):
-                tb = list(opp)
-                cost = evaluate_match(ta, tb)
-                if cost < best_cost:
-                    best_cost = cost
-                    best_tb = tb
-            if best_tb:
-                matches.append({"team_a": ta, "team_b": best_tb, "winner": "입력 대기"})
-                playing_now = [p for p in playing_now if p not in best_tb]
+                formed_teams.append(team)
+                for pp in team: playing_now.remove(pp)
 
     rest_opt = sub_option if match_option in ["특정팀 대결 우선", "특정 페어 우선"] else match_option
+    needed_teams = (court_count - len(matches)) * 2
+    target_team_rating = (sum(p['eff_rating'] for p in playing_now) / (len(playing_now) / 2)) if len(playing_now) > 0 else 10.0
 
-    # 여복 우선 (최적화 로직 적용)
+    # [3단계] 남은 사람들을 2차 기준에 맞춰 '새로운 팀'으로 묶어줌 (과거 파트너 회피 10000점 벌점)
     if rest_opt == "여복 우선":
         females = [p for p in playing_now if p['gender'] == '여']
-        while len(females) >= 4 and len(matches) < court_count:
-            group = females[:4]
-            p0, p1, p2, p3 = group
-            configs = [([p0, p1], [p2, p3]), ([p0, p2], [p1, p3]), ([p0, p3], [p1, p2])]
-            best_conf, best_c = None, float('inf')
-            for ta, tb in configs:
-                c = evaluate_match(ta, tb)
-                if c < best_c: best_c = c; best_conf = (ta, tb)
-            matches.append({"team_a": best_conf[0], "team_b": best_conf[1], "winner": "입력 대기"})
-            for p in group:
-                playing_now.remove(p)
-                females.remove(p)
+        while len(females) >= 2 and len(formed_teams) < needed_teams:
+            p1 = females.pop(0)
+            best_p2 = None; best_p2_idx = -1; best_cost = float('inf')
+            for i, p2 in enumerate(females):
+                r_diff = abs((p1['eff_rating'] + p2['eff_rating']) - target_team_rating)
+                cost = (10000 if p2['name'] in past_partners[p1['name']] else 0) + r_diff
+                if cost < best_cost: best_cost = cost; best_p2 = p2; best_p2_idx = i
+            if best_p2:
+                formed_teams.append([p1, best_p2]); females.pop(best_p2_idx)
+                playing_now.remove(p1); playing_now.remove(best_p2)
 
-    # 혼복 우선 (최적화 로직 적용)
-    elif rest_opt == "혼복 우선":
+    if rest_opt == "혼복 우선":
         males = [p for p in playing_now if p['gender'] == '남']
         females = [p for p in playing_now if p['gender'] == '여']
-        while len(males) >= 2 and len(females) >= 2 and len(matches) < court_count:
-            m1, m2 = males.pop(0), males.pop(0)
-            f1, f2 = females.pop(0), females.pop(0)
-            conf1 = ([m1, f1], [m2, f2])
-            conf2 = ([m1, f2], [m2, f1])
-            c1 = evaluate_match(conf1[0], conf1[1])
-            c2 = evaluate_match(conf2[0], conf2[1])
-            best_conf = conf1 if c1 < c2 else conf2
-            matches.append({"team_a": best_conf[0], "team_b": best_conf[1], "winner": "입력 대기"})
-            playing_now = [p for p in playing_now if p not in (m1, m2, f1, f2)]
+        while len(males) >= 1 and len(females) >= 1 and len(formed_teams) < needed_teams:
+            p1 = males.pop(0)
+            best_p2 = None; best_p2_idx = -1; best_cost = float('inf')
+            for i, p2 in enumerate(females):
+                r_diff = abs((p1['eff_rating'] + p2['eff_rating']) - target_team_rating)
+                cost = (10000 if p2['name'] in past_partners[p1['name']] else 0) + r_diff
+                if cost < best_cost: best_cost = cost; best_p2 = p2; best_p2_idx = i
+            if best_p2:
+                formed_teams.append([p1, best_p2]); females.pop(best_p2_idx)
+                playing_now.remove(p1); playing_now.remove(best_p2)
 
-    # 기본 (나머지 인원) - 무조건 찢어놓는 강력한 다양성 적용
-    while len(playing_now) >= 4 and len(matches) < court_count:
-        group = playing_now[:4]
-        p0, p1, p2, p3 = group
-        configs = [([p0, p1], [p2, p3]), ([p0, p2], [p1, p3]), ([p0, p3], [p1, p2])]
-        best_conf, best_c = None, float('inf')
-        for ta, tb in configs:
-            c = evaluate_match(ta, tb)
-            if c < best_c: best_c = c; best_conf = (ta, tb)
-        matches.append({"team_a": best_conf[0], "team_b": best_conf[1], "winner": "입력 대기"})
-        playing_now = playing_now[4:]
+    while len(playing_now) >= 2 and len(formed_teams) < needed_teams:
+        p1 = playing_now.pop(0)
+        best_p2 = None; best_p2_idx = -1; best_cost = float('inf')
+        for i, p2 in enumerate(playing_now):
+            r_diff = abs((p1['eff_rating'] + p2['eff_rating']) - target_team_rating)
+            cost = (10000 if p2['name'] in past_partners[p1['name']] else 0) + r_diff
+            if cost < best_cost: best_cost = cost; best_p2 = p2; best_p2_idx = i
+        if best_p2:
+            formed_teams.append([p1, best_p2]); playing_now.pop(best_p2_idx)
+
+    # [4단계] 만들어진 팀들(특정 페어 + 새 팀들)을 서로 코트에 매칭 (과거 상대팀 회피 10000점 벌점)
+    while len(formed_teams) >= 2 and len(matches) < court_count:
+        ta = formed_teams.pop(0)
+        best_tb = None; best_tb_idx = -1; best_cost = float('inf')
+        ta_rating = sum(p['eff_rating'] for p in ta)
+        
+        for i, tb in enumerate(formed_teams):
+            tb_rating = sum(p['eff_rating'] for p in tb)
+            diff = abs(ta_rating - tb_rating)
+            penalty = 0
+            for pa in ta:
+                for pb in tb:
+                    if pb['name'] in past_opponents[pa['name']]: penalty += 10000
+            
+            cost = diff + penalty
+            if cost < best_cost:
+                best_cost = cost; best_tb = tb; best_tb_idx = i
+                
+        if best_tb:
+            matches.append({"team_a": ta, "team_b": best_tb, "winner": "입력 대기"})
+            formed_teams.pop(best_tb_idx)
 
     waitlist.extend(playing_now)
+    for t in formed_teams: waitlist.extend(t) # 남은 팀이 있으면 해체하여 대기로 보냄
+    
     return {"matches": matches, "waitlist": waitlist, "option": match_option}
 
 def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기"):
@@ -883,7 +874,6 @@ elif menu == "관리자":
     if st.session_state['admin_logged_in']:
         if st.button("로그아웃"): st.session_state['admin_logged_in'] = False; st.rerun()
         
-        # [데이터 전체 초기화 - 회원 명부는 남기고 기록만 삭제!]
         with st.expander("⚠️ 데이터 초기화 (테스트 기록 삭제)", expanded=False):
             st.warning("지금까지 입력된 모든 대진표, 경기 결과, 승점(과거 엑셀 데이터 포함)이 영구적으로 삭제됩니다. (회원 명부와 승점 규칙은 유지됩니다)")
             confirm_reset = st.checkbox("네, 모든 데이터를 삭제하는 것에 동의합니다.")

@@ -131,6 +131,12 @@ def save_active_tournament(m_date, t_data, gen_params=None):
         c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_gen_params_json', ?)", (json.dumps(gen_params),))
     conn.commit(); conn.close()
 
+# ==========================================
+# [수정] 세션 초기화 필수 값 추가 (에러 해결 핵심)
+# ==========================================
+if 'pair_count' not in st.session_state: st.session_state['pair_count'] = 1
+if 'team_count' not in st.session_state: st.session_state['team_count'] = 1
+
 if 'sync_done' not in st.session_state:
     conn = sqlite3.connect('hote_tennis.db')
     c = conn.cursor()
@@ -226,7 +232,8 @@ def assign_points(match_id, match_date, team_a, team_b, result, rules):
             if not p.get('is_guest', False): c.execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", (match_id, p['name'], match_date, pts_b, 1))
     conn.commit(); conn.close()
 
-def generate_single_round(players_df, court_count, match_option, special_data, sub_option, current_r_num, all_rounds_data):
+# [다중 페어/팀 지원 알고리즘]
+def generate_single_round(players_df, court_count, match_option, special_data_list, sub_option, current_r_num, all_rounds_data):
     player_dicts = players_df.to_dict('records')
     random.shuffle(player_dicts) 
     needed_players = court_count * 4
@@ -245,28 +252,32 @@ def generate_single_round(players_df, court_count, match_option, special_data, s
     playing_now = [p for p in player_dicts if p not in waitlist]
     matches = []
 
-    if match_option == "특정팀 대결 우선" and special_data:
-        team_a_names, team_b_names = special_data
-        team_a_players = [p for p in playing_now if p['name'] in team_a_names]
-        team_b_players = [p for p in playing_now if p['name'] in team_b_names]
-        if len(team_a_players) == 2 and len(team_b_players) == 2:
-            matches.append({"team_a": team_a_players, "team_b": team_b_players, "winner": "입력 대기"})
-            playing_now = [p for p in playing_now if p not in team_a_players and p not in team_b_players]
+    if match_option == "특정팀 대결 우선" and special_data_list:
+        for matchup in special_data_list:
+            if len(matches) >= court_count: break
+            team_a_names, team_b_names = matchup
+            team_a_players = [p for p in playing_now if p['name'] in team_a_names]
+            team_b_players = [p for p in playing_now if p['name'] in team_b_names]
+            if len(team_a_players) == 2 and len(team_b_players) == 2:
+                matches.append({"team_a": team_a_players, "team_b": team_b_players, "winner": "입력 대기"})
+                playing_now = [p for p in playing_now if p not in team_a_players and p not in team_b_players]
 
-    elif match_option == "특정 페어 우선" and special_data:
-        p1_name, p2_name = special_data
-        team_a_players = [p for p in playing_now if p['name'] in (p1_name, p2_name)]
-        if len(team_a_players) == 2:
-            playing_now = [p for p in playing_now if p not in team_a_players]
-            min_diff = float('inf'); best_opponents = None
-            team_a_rating = sum(p['eff_rating'] for p in team_a_players)
-            if len(playing_now) >= 2:
-                for opp in itertools.combinations(playing_now, 2):
-                    diff = abs(team_a_rating - sum(p['eff_rating'] for p in opp))
-                    if diff < min_diff: min_diff = diff; best_opponents = list(opp)
-                if best_opponents:
-                    matches.append({"team_a": team_a_players, "team_b": best_opponents, "winner": "입력 대기"})
-                    playing_now = [p for p in playing_now if p not in best_opponents]
+    elif match_option == "특정 페어 우선" and special_data_list:
+        for pair in special_data_list:
+            if len(matches) >= court_count: break
+            p1_name, p2_name = pair
+            team_a_players = [p for p in playing_now if p['name'] in (p1_name, p2_name)]
+            if len(team_a_players) == 2:
+                playing_now = [p for p in playing_now if p not in team_a_players]
+                min_diff = float('inf'); best_opponents = None
+                team_a_rating = sum(p['eff_rating'] for p in team_a_players)
+                if len(playing_now) >= 2:
+                    for opp in itertools.combinations(playing_now, 2):
+                        diff = abs(team_a_rating - sum(p['eff_rating'] for p in opp))
+                        if diff < min_diff: min_diff = diff; best_opponents = list(opp)
+                    if best_opponents:
+                        matches.append({"team_a": team_a_players, "team_b": best_opponents, "winner": "입력 대기"})
+                        playing_now = [p for p in playing_now if p not in best_opponents]
 
     rest_opt = sub_option if match_option in ["특정팀 대결 우선", "특정 페어 우선"] else match_option
 
@@ -792,7 +803,7 @@ elif menu == "전적":
                             for item in data['list']: st.write(f"📅 {item['date']} | with **{item['partner']}** ➔ {item['res']}")
 
 # ----------------------------------------
-# 4. 관리자 메뉴 
+# 4. 관리자 메뉴
 # ----------------------------------------
 elif menu == "관리자":
     st.subheader("⚙️ 관리자 시스템")

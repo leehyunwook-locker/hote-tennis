@@ -131,9 +131,6 @@ def save_active_tournament(m_date, t_data, gen_params=None):
         c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_gen_params_json', ?)", (json.dumps(gen_params),))
     conn.commit(); conn.close()
 
-# ==========================================
-# [수정] 세션 초기화 필수 값 추가 (에러 해결 핵심)
-# ==========================================
 if 'pair_count' not in st.session_state: st.session_state['pair_count'] = 1
 if 'team_count' not in st.session_state: st.session_state['team_count'] = 1
 
@@ -194,7 +191,7 @@ def get_point_rules():
     return df.set_index('category').to_dict('index')
 
 # ==========================================
-# 2단계: 승점 계산 및 알고리즘
+# 2단계: 매칭 알고리즘 (버그 수정 완벽 패치)
 # ==========================================
 def get_team_type(team):
     genders = [p['gender'] for p in team]
@@ -232,13 +229,22 @@ def assign_points(match_id, match_date, team_a, team_b, result, rules):
             if not p.get('is_guest', False): c.execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", (match_id, p['name'], match_date, pts_b, 1))
     conn.commit(); conn.close()
 
-# [다중 페어/팀 지원 알고리즘]
 def generate_single_round(players_df, court_count, match_option, special_data_list, sub_option, current_r_num, all_rounds_data):
     player_dicts = players_df.to_dict('records')
     random.shuffle(player_dicts) 
     needed_players = court_count * 4
     needed_waitlist = max(0, len(player_dicts) - needed_players)
     
+    # [버그 수정 1] 고정팀(특정 페어, 특정 팀)으로 지정된 사람은 '대기자'로 빠지면 안 됨! 예약자 명단 미리 추출
+    reserved_names = set()
+    if match_option == "특정 페어 우선" and special_data_list:
+        for pair in special_data_list: 
+            reserved_names.update(pair)
+    elif match_option == "특정팀 대결 우선" and special_data_list:
+        for matchup in special_data_list:
+            reserved_names.update(matchup[0])
+            reserved_names.update(matchup[1])
+            
     waitlist = []
     if needed_waitlist > 0:
         rest_counts = {p['name']: 0 for p in player_dicts}
@@ -246,8 +252,17 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
             if r_num != current_r_num:
                 for w in r_data['waitlist']:
                     if w['name'] in rest_counts: rest_counts[w['name']] += 1
-        sorted_by_rest = sorted(player_dicts, key=lambda x: rest_counts[x['name']])
+        
+        # 예약자(고정팀)가 아닌 사람들 중에서만 대기자를 우선 선발함
+        available_for_waitlist = [p for p in player_dicts if p['name'] not in reserved_names]
+        sorted_by_rest = sorted(available_for_waitlist, key=lambda x: rest_counts[x['name']])
+        
         waitlist = sorted_by_rest[:needed_waitlist]
+        # 만약 고정팀이 너무 많아서 대기자가 부족할 경우에만 고정팀 중에서 대기자를 뺌 (예외 안전장치)
+        if len(waitlist) < needed_waitlist:
+            rem = needed_waitlist - len(waitlist)
+            avail_reserved = [p for p in player_dicts if p['name'] in reserved_names and p not in waitlist]
+            waitlist.extend(sorted(avail_reserved, key=lambda x: rest_counts[x['name']])[:rem])
         
     playing_now = [p for p in player_dicts if p not in waitlist]
     matches = []
@@ -271,8 +286,14 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
                 playing_now = [p for p in playing_now if p not in team_a_players]
                 min_diff = float('inf'); best_opponents = None
                 team_a_rating = sum(p['eff_rating'] for p in team_a_players)
-                if len(playing_now) >= 2:
-                    for opp in itertools.combinations(playing_now, 2):
+                
+                # [버그 수정 2] 상대팀을 고를 때, 다른 고정팀 명단에 있는 사람들을 무단으로 훔쳐 오면 안 됨!
+                opp_candidates = [p for p in playing_now if p['name'] not in reserved_names]
+                # 상대팀 후보가 부족하면 남은 사람 전체에서 찾음
+                if len(opp_candidates) < 2: opp_candidates = playing_now
+                
+                if len(opp_candidates) >= 2:
+                    for opp in itertools.combinations(opp_candidates, 2):
                         diff = abs(team_a_rating - sum(p['eff_rating'] for p in opp))
                         if diff < min_diff: min_diff = diff; best_opponents = list(opp)
                     if best_opponents:

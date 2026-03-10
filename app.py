@@ -131,7 +131,6 @@ def save_active_tournament(m_date, t_data, gen_params=None):
         c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_gen_params_json', ?)", (json.dumps(gen_params),))
     conn.commit(); conn.close()
 
-# 세션 기본값 세팅 (페어/팀 카운트 포함)
 if 'sync_done' not in st.session_state:
     conn = sqlite3.connect('hote_tennis.db')
     c = conn.cursor()
@@ -154,22 +153,8 @@ if 'sync_done' not in st.session_state:
         except: st.session_state['gen_params'] = None
     else: st.session_state['gen_params'] = None
     
-    if not st.session_state.get('gen_params') and st.session_state.get('tournament_data'):
-        r1 = st.session_state['tournament_data'][1]
-        p_names = []
-        for m in r1['matches']: p_names.extend([p['name'] for p in m['team_a']] + [p['name'] for p in m['team_b']])
-        p_names.extend([p['name'] for p in r1['waitlist']])
-        st.session_state['gen_params'] = {
-            'r_cnt': len(st.session_state['tournament_data']), 'c_cnt': len(r1['matches']),
-            'opt': r1['option'], 'sub_opt': r1['option'], 'special_data': None, 'selected_names': p_names
-        }
-        
-    st.session_state['pair_count'] = 1
-    st.session_state['team_count'] = 1
     st.session_state['sync_done'] = True
 
-if 'pair_count' not in st.session_state: st.session_state['pair_count'] = 1
-if 'team_count' not in st.session_state: st.session_state['team_count'] = 1
 if 'admin_logged_in' not in st.session_state: st.session_state['admin_logged_in'] = False
 
 def get_admin_pwd():
@@ -241,8 +226,7 @@ def assign_points(match_id, match_date, team_a, team_b, result, rules):
             if not p.get('is_guest', False): c.execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", (match_id, p['name'], match_date, pts_b, 1))
     conn.commit(); conn.close()
 
-# [핵심] 다중 배열 지원 알고리즘으로 업그레이드
-def generate_single_round(players_df, court_count, match_option, special_data_list, sub_option, current_r_num, all_rounds_data):
+def generate_single_round(players_df, court_count, match_option, special_data, sub_option, current_r_num, all_rounds_data):
     player_dicts = players_df.to_dict('records')
     random.shuffle(player_dicts) 
     needed_players = court_count * 4
@@ -261,35 +245,29 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
     playing_now = [p for p in player_dicts if p not in waitlist]
     matches = []
 
-    # 1. 다중 특정 조건 매칭
-    if match_option == "특정팀 대결 우선" and special_data_list:
-        for matchup in special_data_list:
-            if len(matches) >= court_count: break
-            team_a_names, team_b_names = matchup
-            team_a_players = [p for p in playing_now if p['name'] in team_a_names]
-            team_b_players = [p for p in playing_now if p['name'] in team_b_names]
-            if len(team_a_players) == 2 and len(team_b_players) == 2:
-                matches.append({"team_a": team_a_players, "team_b": team_b_players, "winner": "입력 대기"})
-                playing_now = [p for p in playing_now if p not in team_a_players and p not in team_b_players]
+    if match_option == "특정팀 대결 우선" and special_data:
+        team_a_names, team_b_names = special_data
+        team_a_players = [p for p in playing_now if p['name'] in team_a_names]
+        team_b_players = [p for p in playing_now if p['name'] in team_b_names]
+        if len(team_a_players) == 2 and len(team_b_players) == 2:
+            matches.append({"team_a": team_a_players, "team_b": team_b_players, "winner": "입력 대기"})
+            playing_now = [p for p in playing_now if p not in team_a_players and p not in team_b_players]
 
-    elif match_option == "특정 페어 우선" and special_data_list:
-        for pair in special_data_list:
-            if len(matches) >= court_count: break
-            p1_name, p2_name = pair
-            team_a_players = [p for p in playing_now if p['name'] in (p1_name, p2_name)]
-            if len(team_a_players) == 2:
-                playing_now = [p for p in playing_now if p not in team_a_players]
-                min_diff = float('inf'); best_opponents = None
-                team_a_rating = sum(p['eff_rating'] for p in team_a_players)
-                if len(playing_now) >= 2:
-                    for opp in itertools.combinations(playing_now, 2):
-                        diff = abs(team_a_rating - sum(p['eff_rating'] for p in opp))
-                        if diff < min_diff: min_diff = diff; best_opponents = list(opp)
-                    if best_opponents:
-                        matches.append({"team_a": team_a_players, "team_b": best_opponents, "winner": "입력 대기"})
-                        playing_now = [p for p in playing_now if p not in best_opponents]
+    elif match_option == "특정 페어 우선" and special_data:
+        p1_name, p2_name = special_data
+        team_a_players = [p for p in playing_now if p['name'] in (p1_name, p2_name)]
+        if len(team_a_players) == 2:
+            playing_now = [p for p in playing_now if p not in team_a_players]
+            min_diff = float('inf'); best_opponents = None
+            team_a_rating = sum(p['eff_rating'] for p in team_a_players)
+            if len(playing_now) >= 2:
+                for opp in itertools.combinations(playing_now, 2):
+                    diff = abs(team_a_rating - sum(p['eff_rating'] for p in opp))
+                    if diff < min_diff: min_diff = diff; best_opponents = list(opp)
+                if best_opponents:
+                    matches.append({"team_a": team_a_players, "team_b": best_opponents, "winner": "입력 대기"})
+                    playing_now = [p for p in playing_now if p not in best_opponents]
 
-    # 2. 2차 조건 적용 (남은 코트 채우기)
     rest_opt = sub_option if match_option in ["특정팀 대결 우선", "특정 페어 우선"] else match_option
 
     if rest_opt == "여복 우선":
@@ -307,7 +285,6 @@ def generate_single_round(players_df, court_count, match_option, special_data_li
             matches.append({"team_a": team_a, "team_b": team_b, "winner": "입력 대기"})
         playing_now = males + females
 
-    # 3. 기본 조건으로 나머지 배정
     while len(playing_now) >= 4 and len(matches) < court_count:
         group = playing_now[:4]
         min_diff = float('inf')
@@ -638,3 +615,465 @@ elif menu == "랭킹":
             final_df = final_df[cols_order]
             
             html_table = final_df.to_html(escape=False, index=False, justify='center', classes="rank-table")
+            st.markdown(f"<div class='table-wrapper'>{html_table}</div>", unsafe_allow_html=True)
+            
+            st.divider()
+            st.markdown("#### 🔍 날짜별 전적 확인")
+            c_s1, c_s2 = st.columns(2)
+            with c_s1: sel_name = st.selectbox("회원", ["선택"] + members_df['name'].tolist())
+            with c_s2: sel_date = st.selectbox("날짜", ["선택"] + sorted_dates)
+            
+            if sel_date != "선택" and sel_name != "선택":
+                day_matches = mh_df[mh_df['game_date'] == sel_date]
+                conn = sqlite3.connect('hote_tennis.db')
+                def is_in_match(row, n): return n in row['team_a'].split(',') or n in row['team_b'].split(',')
+                user_matches = day_matches[day_matches.apply(lambda x: is_in_match(x, sel_name), axis=1)]
+                pts_df = pd.read_sql_query("SELECT source_id, points, games FROM points_log WHERE input_date=? AND name=?", conn, params=(sel_date, sel_name))
+                conn.close()
+                
+                if user_matches.empty and pts_df.empty:
+                    st.info("기록이 없습니다.")
+                else:
+                    tot_pts_day = pts_df['points'].sum() if not pts_df.empty else 0
+                    st.success(f"**🎾 {sel_name}님 ({sel_date}) : 총 획득 승점 {tot_pts_day}점**")
+                    
+                    for _, m in user_matches.iterrows():
+                        ta_list, tb_list = m['team_a'].split(','), m['team_b'].split(',')
+                        if sel_name in ta_list:
+                            my_team, opp_team = " & ".join(ta_list), " & ".join(tb_list)
+                            my_res = "무" if m['winner'] == '무승부' else "승" if m['winner'] == 'A팀 승리' else "패"
+                            op_res = "무" if m['winner'] == '무승부' else "패" if m['winner'] == 'A팀 승리' else "승"
+                        else:
+                            my_team, opp_team = " & ".join(tb_list), " & ".join(ta_list)
+                            my_res = "무" if m['winner'] == '무승부' else "승" if m['winner'] == 'B팀 승리' else "패"
+                            op_res = "무" if m['winner'] == '무승부' else "패" if m['winner'] == 'B팀 승리' else "승"
+                            
+                        match_pts = pts_df[pts_df['source_id'] == m['id']]['points'].sum() if not pts_df.empty else 0
+                        st.markdown(f"- **{my_team} ({my_res})** VS {opp_team} ({op_res}) : **+{match_pts}점**")
+                        
+                    try: wait_pts_row = pts_df[pd.to_numeric(pts_df['games']) == 0]
+                    except: wait_pts_row = pd.DataFrame()
+                        
+                    if not wait_pts_row.empty:
+                        w_pts = wait_pts_row['points'].sum()
+                        w_cnt = len(wait_pts_row)
+                        st.markdown(f"- 💤 **대기 ({w_cnt}회)** : **+{w_pts}점**")
+
+# ----------------------------------------
+# 3. 전적 조회
+# ----------------------------------------
+elif menu == "전적":
+    st.subheader("📊 심층 전적 분석")
+    regular_members_df = get_members(exclude_guest=True)
+    if regular_members_df.empty: st.warning("등록된 정회원이 없습니다.")
+    else:
+        target_user = st.selectbox("분석할 회원 선택", regular_members_df['name'].tolist())
+        if target_user:
+            conn = sqlite3.connect('hote_tennis.db')
+            history_df = pd.read_sql_query("SELECT * FROM match_history WHERE winner != '입력 대기'", conn)
+            conn.close()
+            
+            if history_df.empty: st.info("저장된 기록이 없습니다.")
+            else:
+                my_wins, my_losses, my_draws = 0, 0, 0
+                partner_stats, opponent_stats, opp_ind_stats = {}, {}, {}
+                pos_stats = {'포': {'승':0, '패':0, '무':0}, '백': {'승':0, '패':0, '무':0}}
+                
+                for _, match in history_df.iterrows():
+                    a_names, b_names, winner = match['team_a'].split(','), match['team_b'].split(','), match['winner']
+                    pos_a = match.get('team_a_pos', '🎾 포/백 선택')
+                    pos_b = match.get('team_b_pos', '🎾 포/백 선택')
+                    
+                    if target_user in a_names or target_user in b_names:
+                        my_team = a_names if target_user in a_names else b_names
+                        opp_team = b_names if target_user in a_names else a_names
+                        partner = my_team[1] if len(my_team)>1 and my_team[0] == target_user else my_team[0]
+                        opp_str = f"{opp_team[0]} & {opp_team[1]}" if len(opp_team)>1 else opp_team[0]
+                        
+                        is_win = (target_user in a_names and winner == "A팀 승리") or (target_user in b_names and winner == "B팀 승리")
+                        is_draw = (winner == "무승부")
+                        if is_win: my_wins += 1; res_text = "🔵 승리"
+                        elif is_draw: my_draws += 1; res_text = "⚪ 무승부"
+                        else: my_losses += 1; res_text = "🔴 패배"
+                        
+                        my_pos = None
+                        if target_user in a_names and target_user in pos_a:
+                            if f"{target_user}(포)" in pos_a: my_pos = '포'
+                            elif f"{target_user}(백)" in pos_a: my_pos = '백'
+                        elif target_user in b_names and target_user in pos_b:
+                            if f"{target_user}(포)" in pos_b: my_pos = '포'
+                            elif f"{target_user}(백)" in pos_b: my_pos = '백'
+                        if my_pos:
+                            if is_win: pos_stats[my_pos]['승'] += 1
+                            elif is_draw: pos_stats[my_pos]['무'] += 1
+                            else: pos_stats[my_pos]['패'] += 1
+                        
+                        if partner not in partner_stats: partner_stats[partner] = {'승':0, '패':0, '무':0, 'list':[]}
+                        if is_win: partner_stats[partner]['승'] += 1
+                        elif is_draw: partner_stats[partner]['무'] += 1
+                        else: partner_stats[partner]['패'] += 1
+                        partner_stats[partner]['list'].append({"opp": opp_str, "res": res_text, "date": match['game_date']})
+                            
+                        if opp_str not in opponent_stats: opponent_stats[opp_str] = {'승':0, '패':0, '무':0, 'list':[]}
+                        if is_win: opponent_stats[opp_str]['승'] += 1
+                        elif is_draw: opponent_stats[opp_str]['무'] += 1
+                        else: opponent_stats[opp_str]['패'] += 1
+                        opponent_stats[opp_str]['list'].append({"partner": partner, "res": res_text, "date": match['game_date']})
+
+                        for opp_p in opp_team:
+                            if opp_p not in opp_ind_stats: opp_ind_stats[opp_p] = {'승':0, '패':0, '무':0}
+                            if is_win: opp_ind_stats[opp_p]['승'] += 1
+                            elif is_draw: opp_ind_stats[opp_p]['무'] += 1
+                            else: opp_ind_stats[opp_p]['패'] += 1
+                
+                tot_games = my_wins + my_losses + my_draws
+                if tot_games == 0: st.warning("경기 데이터가 없습니다.")
+                else:
+                    def get_best_worst(stats_dict):
+                        rates = []
+                        for k, v in stats_dict.items():
+                            t = v['승'] + v['무'] + v['패']
+                            if t > 0: rates.append({"name": k, "rate": round((v['승']/t)*100, 1), "tot": t, "w": v['승'], "d": v['무'], "l": v['패']})
+                        if not rates: return None, None
+                        rates.sort(key=lambda x: (x['rate'], x['tot']))
+                        return rates[-1], rates[0] 
+
+                    b_pt, w_pt = get_best_worst(partner_stats) 
+                    b_op_tm, w_op_tm = get_best_worst(opponent_stats)
+                    b_op_id, w_op_id = get_best_worst(opp_ind_stats)
+
+                    st.success(f"**🥇 {target_user}님의 종합 전적: {tot_games}전 {my_wins}승 {my_draws}무 {my_losses}패 (승률 {round((my_wins/tot_games)*100,1)}%)**")
+                    
+                    st.markdown("#### 🎯 나의 상세 분석 리포트")
+                    st.markdown("##### 🍯 베스트")
+                    if b_pt:
+                        with st.expander(f"🤝 찰떡 파트너: **{b_pt['name']}** ({b_pt['rate']}%)"):
+                            st.write(f"└ 함께 **{b_pt['tot']}전 {b_pt['w']}승 {b_pt['d']}무 {b_pt['l']}패**를 기록했습니다.")
+                    if b_op_tm:
+                        with st.expander(f"💸 자판기(팀): **{b_op_tm['name']}** ({b_op_tm['rate']}%)"):
+                            st.write(f"└ 해당 팀을 만나 **{b_op_tm['tot']}전 {b_op_tm['w']}승 {b_op_tm['d']}무 {b_op_tm['l']}패**를 기록했습니다.")
+                    if b_op_id:
+                        with st.expander(f"💸 자판기(개인): **{b_op_id['name']}** ({b_op_id['rate']}%)"):
+                            st.write(f"└ 해당 선수를 상대로 **{b_op_id['tot']}전 {b_op_id['w']}승 {b_op_id['d']}무 {b_op_id['l']}패**를 기록했습니다.")
+
+                    st.markdown("##### 👿 워스트")
+                    if w_op_tm:
+                        with st.expander(f"💢 천적(팀): **{w_op_tm['name']}** ({w_op_tm['rate']}%)"):
+                            st.write(f"└ 해당 팀을 만나 **{w_op_tm['tot']}전 {w_op_tm['w']}승 {w_op_tm['d']}무 {w_op_tm['l']}패**를 기록했습니다.")
+                    if w_op_id:
+                        with st.expander(f"💢 천적(개인): **{w_op_id['name']}** ({w_op_id['rate']}%)"):
+                            st.write(f"└ 해당 선수를 상대로 **{w_op_id['tot']}전 {w_op_id['w']}승 {w_op_id['d']}무 {w_op_id['l']}패**를 기록했습니다.")
+
+                    st.divider()
+                    st.markdown("#### 🏸 포지션별 승률")
+                    pf, pb = pos_stats['포'], pos_stats['백']
+                    ptot, btot = pf['승']+pf['패']+pf['무'], pb['승']+pb['패']+pb['무']
+                    prate = round((pf['승']/ptot)*100, 1) if ptot > 0 else 0
+                    brate = round((pb['승']/btot)*100, 1) if btot > 0 else 0
+                    
+                    st.info(f"**🔴 포(Fore):** {pf['승']}승 {pf['무']}무 {pf['패']}패 (승률 {prate}%)")
+                    st.error(f"**🔵 백(Back):** {pb['승']}승 {pb['무']}무 {pb['패']}패 (승률 {brate}%)")
+
+                    st.divider()
+                    st.markdown("#### 🤝 파트너별 상세 승률")
+                    sorted_pt = sorted(partner_stats.items(), key=lambda x: x[1]['승']/(x[1]['승']+x[1]['무']+x[1]['패']), reverse=True)
+                    for p_name, data in sorted_pt:
+                        tot = data['승'] + data['무'] + data['패']
+                        with st.expander(f"**{p_name}** | {data['승']}승 {data['무']}무 {data['패']}패"):
+                            for item in data['list']: st.write(f"📅 {item['date']} | vs **{item['opp']}** ➔ {item['res']}")
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    
+                    st.markdown("#### ⚔️ 상대팀별 상세 승률")
+                    sorted_op = sorted(opponent_stats.items(), key=lambda x: x[1]['승']/(x[1]['승']+x[1]['무']+x[1]['패']), reverse=True)
+                    for o_name, data in sorted_op:
+                        tot = data['승'] + data['무'] + data['패']
+                        with st.expander(f"**{o_name}** | {data['승']}승 {data['무']}무 {data['패']}패"):
+                            for item in data['list']: st.write(f"📅 {item['date']} | with **{item['partner']}** ➔ {item['res']}")
+
+# ----------------------------------------
+# 4. 관리자 메뉴 
+# ----------------------------------------
+elif menu == "관리자":
+    st.subheader("⚙️ 관리자 시스템")
+    if not st.session_state['admin_logged_in']:
+        if st.text_input("비밀번호 (초기: 1234)", type="password") == get_admin_pwd():
+            st.session_state['admin_logged_in'] = True; st.rerun()
+                
+    if st.session_state['admin_logged_in']:
+        if st.button("로그아웃"): st.session_state['admin_logged_in'] = False; st.rerun()
+        
+        with st.expander("⚠️ 데이터 초기화 (테스트 기록 삭제)", expanded=False):
+            st.warning("지금까지 입력된 모든 대진표, 경기 결과, 승점(과거 엑셀 데이터 포함)이 영구적으로 삭제됩니다. (회원 명부와 승점 규칙은 유지됩니다)")
+            confirm_reset = st.checkbox("네, 모든 데이터를 삭제하는 것에 동의합니다.")
+            if confirm_reset:
+                if st.button("🔥 전체 데이터 초기화 실행", type="primary", use_container_width=True):
+                    conn = sqlite3.connect('hote_tennis.db')
+                    c = conn.cursor()
+                    c.execute("DELETE FROM match_history")
+                    c.execute("DELETE FROM points_log")
+                    c.execute("DELETE FROM settings WHERE key IN ('active_match_date', 'active_tournament_json', 'active_gen_params_json')")
+                    conn.commit(); conn.close()
+                    st.session_state['tournament_data'] = {}
+                    st.session_state['gen_params'] = None
+                    st.success("테스트 데이터가 완벽하게 삭제되었습니다! 이제 새로 시작할 수 있습니다.")
+                    st.rerun()
+                    
+        with st.expander("🔄 현장 대진표 수정 (결원 대체)", expanded=False):
+            if st.session_state['tournament_data']:
+                round_opts = list(st.session_state['tournament_data'].keys())
+                edit_r = st.selectbox("수정할 라운드 선택", round_opts)
+
+                r_data = st.session_state['tournament_data'][edit_r]
+                
+                playing_names = []
+                for m in r_data['matches']: 
+                    playing_names.extend([p['name'] for p in m['team_a']] + [p['name'] for p in m['team_b']])
+                wait_names = [p['name'] for p in r_data['waitlist']]
+                
+                st.markdown("##### 🔄 대체 선수 선택")
+                out_p = st.selectbox("🔽 빠질 사람 (현재 코트 배정자만)", playing_names)
+                
+                valid_waitlisters = [w for w in wait_names if w != out_p]
+                in_options = []
+                if valid_waitlisters:
+                    for w in valid_waitlisters:
+                        in_options.append(f"🟢 [대기자] {w}")
+                else:
+                    gen_params = st.session_state.get('gen_params', {})
+                    attending_names = gen_params.get('selected_names', playing_names + wait_names)
+                    all_member_names = get_members()['name'].tolist()
+                    non_attending = [n for n in all_member_names if n not in attending_names]
+                    for n in non_attending:
+                        in_options.append(f"⚪ [미참석] {n}")
+
+                if not in_options: 
+                    in_options = ["선택가능 대체자 없음"]
+
+                in_p_label = st.selectbox("🔼 들어갈 사람 (대체자)", in_options)
+
+                if st.button("해당 라운드 코트 교체", type="primary", use_container_width=True):
+                    if in_p_label == "선택가능 대체자 없음": 
+                        st.error("대체할 수 있는 선수가 없습니다.")
+                    else:
+                        in_p_name = in_p_label.replace("🟢 [대기자] ", "").replace("⚪ [미참석] ", "")
+                        new_p_data = get_members()[get_members()['name'] == in_p_name].to_dict('records')[0]
+
+                        if "대기자" in in_p_label:
+                            r_data['waitlist'] = [w for w in r_data['waitlist'] if w['name'] != in_p_name]
+
+                        for m_idx, m in enumerate(r_data['matches']):
+                            for i, p in enumerate(m['team_a']):
+                                if p['name'] == out_p: m['team_a'][i] = new_p_data; m['winner'] = "입력 대기"
+                            for i, p in enumerate(m['team_b']):
+                                if p['name'] == out_p: m['team_b'][i] = new_p_data; m['winner'] = "입력 대기"
+
+                        conn = sqlite3.connect('hote_tennis.db')
+                        wl_id = f"{st.session_state['match_date']}_R{edit_r}_Waitlist"
+                        conn.cursor().execute("DELETE FROM points_log WHERE source_id=?", (wl_id,))
+                        rules = get_point_rules()
+                        for w in r_data['waitlist']:
+                            if not w.get('is_guest', False):
+                                conn.cursor().execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)",
+                                                      (wl_id, w['name'], st.session_state['match_date'], rules['대기자']['win'], 0))
+                        
+                        for c_idx, m in enumerate(r_data['matches']):
+                             if m['winner'] == "입력 대기":
+                                 m_id = f"{st.session_state['match_date']}_R{edit_r}_C{c_idx}"
+                                 conn.cursor().execute("DELETE FROM match_history WHERE id=?", (m_id,))
+                                 conn.cursor().execute("DELETE FROM points_log WHERE source_id=?", (m_id,))
+
+                        conn.commit(); conn.close()
+                        st.session_state['tournament_data'][edit_r] = r_data
+                        gen_params = st.session_state.get('gen_params')
+                        save_active_tournament(st.session_state['match_date'], st.session_state['tournament_data'], gen_params)
+                        
+                        st.success(f"{edit_r}라운드 {out_p} ➔ {in_p_name} 교체 완료! 해당 코트 결과가 초기화되었습니다.")
+                        st.rerun()
+            else:
+                st.info("현재 생성된 대진표가 없습니다.")
+
+        with st.expander("📥 과거 데이터(엑셀) 일괄 업로드", expanded=False):
+            st.info("이전에 사용하던 엑셀 데이터를 업로드하여 랭킹에 합산할 수 있습니다.")
+            st.markdown("**[필수 엑셀 양식]** 첫 줄(헤더)에 아래 4개 항목을 정확히 적어주세요.\n"
+                        "* `날짜` (예: 2025-12-01) | `이름` | `승점` | `게임수`")
+            uploaded_file = st.file_uploader("엑셀 파일 첨부 (.xlsx, .xls)", type=["xlsx", "xls"])
+            if uploaded_file is not None:
+                if st.button("데이터 업로드 실행", type="primary", use_container_width=True):
+                    try:
+                        df_up = pd.read_excel(uploaded_file)
+                        req_cols = ['날짜', '이름', '승점', '게임수']
+                        if not all(c in df_up.columns for c in req_cols):
+                            st.error("엑셀 양식이 맞지 않습니다. 열(Column) 이름을 확인해주세요.")
+                        else:
+                            conn = sqlite3.connect('hote_tennis.db')
+                            c = conn.cursor()
+                            c.execute("DELETE FROM points_log WHERE source_id='EXCEL_IMPORT'")
+                            for _, row in df_up.iterrows():
+                                if pd.notna(row['이름']) and pd.notna(row['승점']):
+                                    date_str = str(row['날짜'])[:10]
+                                    c.execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", 
+                                              ('EXCEL_IMPORT', row['이름'], date_str, int(row['승점']), int(row['게임수'])))
+                            conn.commit(); conn.close()
+                            st.success("🎉 과거 데이터가 성공적으로 병합되었습니다!")
+                    except Exception as e:
+                        st.error(f"엑셀을 읽는 중 에러가 발생했습니다: {e}\n(PC에 openpyxl 모듈이 설치되어 있어야 합니다)")
+
+        with st.expander("🛠️ 승점 부여 방식 설정", expanded=False):
+            conn = sqlite3.connect('hote_tennis.db')
+            rules_df = pd.read_sql_query("SELECT category as '구분', win as '승', lose as '패', draw as '무승부' FROM point_rules", conn)
+            edited_df = st.data_editor(rules_df, hide_index=True, use_container_width=True)
+            if st.button("변경한 승점 저장"):
+                c = conn.cursor()
+                for _, row in edited_df.iterrows():
+                    c.execute("UPDATE point_rules SET win=?, lose=?, draw=? WHERE category=?", (row['승'], row['패'], row['무승부'], row['구분']))
+                conn.commit(); st.success("저장 완료!")
+            conn.close()
+
+        with st.expander("👥 회원 명부 및 관리 (등록/삭제/승급)", expanded=False):
+            members_df = get_members()
+            reg_df = members_df[members_df['is_guest'] == 0][['name', 'gender', 'base_rating', 'eff_rating']].copy()
+            gst_df = members_df[members_df['is_guest'] == 1][['name', 'gender', 'base_rating', 'eff_rating']].copy()
+            
+            reg_df.columns = ['이름', '성별', '초기평점', '적용평점(실제)']
+            gst_df.columns = ['이름', '성별', '초기평점', '적용평점(실제)']
+            
+            st.markdown("##### 👑 정회원 명단")
+            st.dataframe(reg_df, hide_index=True, use_container_width=True)
+            st.markdown("##### 🏃‍♂️ 게스트 명단")
+            st.dataframe(gst_df, hide_index=True, use_container_width=True)
+            
+            st.divider()
+            st.markdown("##### ➕ 신규 등록")
+            c_reg1, c_reg2 = st.columns(2)
+            with c_reg1:
+                new_n = st.text_input("이름")
+                new_g = st.selectbox("성별", ["남", "여"])
+            with c_reg2:
+                new_r = st.number_input("초기 평점", value=5.0)
+                is_guest = st.checkbox("게스트로 등록")
+            if st.button("신규 회원 추가", type="primary", use_container_width=True):
+                if new_n:
+                    conn = sqlite3.connect('hote_tennis.db')
+                    conn.cursor().execute("INSERT INTO members (name, gender, base_rating, is_active, is_guest) VALUES (?, ?, ?, 1, ?)", (new_n, new_g, new_r, 1 if is_guest else 0))
+                    conn.commit(); conn.close(); st.rerun()
+                    
+            st.divider()
+            st.markdown("##### 🔄 게스트 ➔ 정회원 승급 (전적 소급)")
+            gst_names = gst_df['이름'].tolist()
+            up_g = st.selectbox("승급할 게스트 선택", gst_names if gst_names else ["승급할 게스트 없음"])
+            if st.button("정회원으로 승급", use_container_width=True):
+                if up_g != "승급할 게스트 없음":
+                    conn = sqlite3.connect('hote_tennis.db')
+                    conn.cursor().execute("UPDATE members SET is_guest=0 WHERE name=?", (up_g,))
+                    conn.commit(); conn.close()
+                    retro_calculate_points_for_user(up_g)
+                    st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다! 과거 전적이 랭킹에 완벽히 합산됩니다.")
+                    st.rerun()
+                    
+            st.divider()
+            st.markdown("##### ❌ 회원 삭제")
+            del_n = st.selectbox("삭제할 사람", members_df['name'].tolist())
+            if st.button("회원 삭제", use_container_width=True):
+                conn = sqlite3.connect('hote_tennis.db')
+                conn.cursor().execute("UPDATE members SET is_active=0 WHERE name=?", (del_n,))
+                conn.commit(); conn.close(); st.rerun()
+
+        st.divider()
+        st.subheader("🎾 대진표 생성 및 관리")
+        
+        full_df = get_members()
+        selected_names = []
+        cols = st.columns(3)
+        for idx, row in full_df.iterrows():
+            with cols[idx % 3]:
+                disp_name = f"{row['name']}(G)" if row['is_guest'] == 1 else row['name']
+                if st.checkbox(disp_name, value=True, key=f"chk_{row['name']}"): selected_names.append(row['name'])
+        
+        st.info(f"✅ 선택된 참여 인원: **{len(selected_names)}명**")
+                
+        m_date = st.text_input("📅 대진표 적용 날짜", value=st.session_state['match_date'])
+        
+        c1, c2 = st.columns(2)
+        with c1: r_cnt = st.number_input("라운드 수", 1, 10, 4)
+        with c2: c_cnt = st.number_input("코트 수", 1, 5, 2)
+        
+        c3, c4 = st.columns(2)
+        with c3: opt = st.selectbox("1차 기준", ["기본 (평점 우선)", "혼복 우선", "여복 우선", "특정 페어 우선", "특정팀 대결 우선"])
+        with c4:
+            sub_opt = "기본 (평점 우선)"
+            if opt in ["특정 페어 우선", "특정팀 대결 우선"]:
+                sub_opt = st.selectbox("2차 기준(나머지)", ["기본 (평점 우선)", "혼복 우선", "여복 우선"])
+
+        special_data_list = []
+        if opt == "특정 페어 우선":
+            st.caption("고정할 페어(들)를 구성하세요.")
+            for i in range(st.session_state['pair_count']):
+                st.markdown(f"**[{i+1}번 페어]**")
+                c_p1, c_p2 = st.columns(2)
+                with c_p1: p1_a = st.selectbox(f"선수 1", ["선택"] + selected_names, key=f"p1_a_{i}")
+                with c_p2: p1_b = st.selectbox(f"선수 2", ["선택"] + selected_names, key=f"p1_b_{i}")
+                if p1_a != "선택" and p1_b != "선택":
+                    special_data_list.append((p1_a, p1_b))
+            
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                if st.button("➕ 페어 추가하기"): st.session_state['pair_count'] += 1; st.rerun()
+            with c_btn2:
+                if st.session_state['pair_count'] > 1 and st.button("➖ 페어 줄이기"): st.session_state['pair_count'] -= 1; st.rerun()
+                
+        elif opt == "특정팀 대결 우선":
+            st.caption("고정할 대결(들)을 구성하세요.")
+            for i in range(st.session_state['team_count']):
+                st.markdown(f"**[{i+1}번 매치]**")
+                c_t1, c_t2 = st.columns(2)
+                with c_t1: ta_1 = st.selectbox(f"A팀-1", ["선택"] + selected_names, key=f"ta_1_{i}")
+                with c_t2: ta_2 = st.selectbox(f"A팀-2", ["선택"] + selected_names, key=f"ta_2_{i}")
+                c_t3, c_t4 = st.columns(2)
+                with c_t3: tb_1 = st.selectbox(f"B팀-1", ["선택"] + selected_names, key=f"tb_1_{i}")
+                with c_t4: tb_2 = st.selectbox(f"B팀-2", ["선택"] + selected_names, key=f"tb_2_{i}")
+                if "선택" not in [ta_1, ta_2, tb_1, tb_2]:
+                    special_data_list.append(((ta_1, ta_2), (tb_1, tb_2)))
+
+            c_btn1, c_btn2 = st.columns(2)
+            with c_btn1:
+                if st.button("➕ 대결 추가하기"): st.session_state['team_count'] += 1; st.rerun()
+            with c_btn2:
+                if st.session_state['team_count'] > 1 and st.button("➖ 대결 줄이기"): st.session_state['team_count'] -= 1; st.rerun()
+
+        if st.button("🚀 대진표 생성 (기존 초기화)", type="primary", use_container_width=True):
+            st.session_state['match_date'] = m_date 
+            p_df = full_df[full_df['name'].isin(selected_names)]
+            
+            gen_params = {
+                'r_cnt': r_cnt, 'c_cnt': c_cnt, 'opt': opt, 'sub_opt': sub_opt,
+                'special_data': special_data_list, 'selected_names': selected_names
+            }
+            st.session_state['gen_params'] = gen_params
+            
+            st.session_state['tournament_data'] = {}
+            for r in range(1, r_cnt + 1):
+                round_result = generate_single_round(p_df, c_cnt, opt, special_data_list, sub_opt, r, st.session_state['tournament_data'])
+                st.session_state['tournament_data'][r] = round_result
+                
+                rules = get_point_rules()
+                wl_id = f"{m_date}_R{r}_Waitlist"
+                conn = sqlite3.connect('hote_tennis.db')
+                conn.cursor().execute("DELETE FROM points_log WHERE source_id=?", (wl_id,))
+                for w in round_result['waitlist']:
+                    if not w.get('is_guest', False):
+                        conn.cursor().execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", 
+                                              (wl_id, w['name'], m_date, rules['대기자']['win'], 0))
+                conn.commit(); conn.close()
+            
+            save_active_tournament(m_date, st.session_state['tournament_data'], gen_params)
+            st.success("생성 완료!")
+
+        if st.session_state['tournament_data']:
+            st.markdown("<br><h3 style='color:#1976D2;'>👇 생성된 대진표 (평점 확인용)</h3>", unsafe_allow_html=True)
+            for r_num, round_data in st.session_state['tournament_data'].items():
+                if render_horizontal_bracket(r_num, round_data, is_admin=True, filter_name="전체 보기"):
+                    p_df = full_df[full_df['name'].isin(selected_names)]
+                    st.session_state['tournament_data'][r_num] = generate_single_round(p_df, c_cnt, opt, special_data_list, sub_opt, r_num, st.session_state['tournament_data'])
+                    save_active_tournament(m_date, st.session_state['tournament_data'], st.session_state.get('gen_params'))
+                    st.rerun()

@@ -7,9 +7,33 @@ import json
 from datetime import datetime
 
 # ==========================================
-# 모바일 UI 최적화
+# 모바일 UI 최적화 및 홈화면 아이콘 세팅
 # ==========================================
-st.set_page_config(page_title="핫테 테니스 매니저", page_icon="🎾", layout="wide", initial_sidebar_state="collapsed")
+# 1. 설치 시 기본 이름을 "핫테 대진표"로 설정
+st.set_page_config(page_title="핫테 대진표", page_icon="🎾", layout="wide", initial_sidebar_state="collapsed")
+
+# 2. 스마트폰 홈 화면 아이콘 강제 변경 스크립트 (HOTe 로고 적용)
+st.markdown("""
+<script>
+    const iconUrl = "https://raw.githubusercontent.com/leehyunwook-locker/hote-tennis/main/logo.jpg";
+    
+    let appleIcon = window.parent.document.querySelector('link[rel="apple-touch-icon"]');
+    if (!appleIcon) {
+        appleIcon = window.parent.document.createElement('link');
+        appleIcon.rel = 'apple-touch-icon';
+        window.parent.document.head.appendChild(appleIcon);
+    }
+    appleIcon.href = iconUrl;
+
+    let shortcutIcon = window.parent.document.querySelector('link[rel="shortcut icon"]');
+    if (!shortcutIcon) {
+        shortcutIcon = window.parent.document.createElement('link');
+        shortcutIcon.rel = 'shortcut icon';
+        window.parent.document.head.appendChild(shortcutIcon);
+    }
+    shortcutIcon.href = iconUrl;
+</script>
+""", unsafe_allow_html=True)
 
 st.markdown("""
 <style>
@@ -1148,3 +1172,4 @@ elif menu == "관리자":
                     st.session_state['tournament_data'][r_num] = generate_single_round(p_df, c_cnt, opt, special_data_list, sub_opt, r_num, st.session_state['tournament_data'])
                     save_active_tournament(m_date, st.session_state['tournament_data'], st.session_state.get('gen_params'))
                     st.rerun()
+

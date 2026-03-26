@@ -29,7 +29,7 @@ st.markdown("""
     div[data-baseweb="select"] { margin-top: -5px; font-size: 13px !important; }
     
     .table-wrapper { overflow-x: auto; width: 100%; max-height: 65vh; margin-bottom: 1rem; border: 1px solid #ddd; }
-    table.rank-table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: center; font-size: 13px; font-family: sans-serif; white-space: nowrap; }
+    table.rank-table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: center; font-size: 12px; font-family: sans-serif; white-space: nowrap; }
     table.rank-table td, table.rank-table th { padding: 8px 5px; border-bottom: 1px solid #ddd; border-right: 1px solid #ddd; text-align: center; }
     table.rank-table th { position: sticky; top: 0; background-color: #f0f2f6; z-index: 4; }
     table.rank-table th:nth-child(1), table.rank-table td:nth-child(1) { position: sticky; left: 0px; background-color: #f9f9f9; z-index: 3; min-width: 35px; }
@@ -176,7 +176,7 @@ def get_point_rules():
 def strip_gender(s): return s.replace('(여)','').replace('(남)','').replace('(G)','').strip() if isinstance(s, str) else s
 
 # ==========================================
-# 실시간 순위, 미입력 안내, 대기자 표시 로직 
+# 실시간 순위, 미입력 안내 렌더링 
 # ==========================================
 def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시간 순위"):
     if pts_df.empty:
@@ -288,7 +288,7 @@ def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all
                         b_names = [p['name'] for p in m['team_b']]
                         if filter_name not in a_names and filter_name not in b_names:
                             continue
-                    missing_matches.append((r_str, c_idx, m))
+                    missing_matches.append((str(r), c_idx, m))
         
         if missing_matches:
             st.markdown("<div style='padding:10px 5px; background-color:#fff3e0; border-radius:8px; border:2px solid #ffb74d; margin-bottom:15px;'>", unsafe_allow_html=True)
@@ -793,8 +793,7 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
                         try:
                             wl_id = f"EVT{event_id}_R{r_num}_Waitlist"
                             conn.cursor().execute("DELETE FROM event_points_log WHERE match_id=?", (wl_id,))
-                            rules = get_point_rules()
-                            for w in new_r['waitlist']: conn.cursor().execute("INSERT INTO event_points_log (event_id, name, points, games, match_id, result) VALUES (?, ?, ?, ?, ?, ?)", (event_id, str(w['name']), rules.get('대기자', {'win':2})['win'], 0, wl_id, '대기'))
+                            for w in new_r['waitlist']: conn.cursor().execute("INSERT INTO event_points_log (event_id, name, points, games, match_id, result) VALUES (?, ?, ?, ?, ?, ?)", (event_id, str(w['name']), get_point_rules().get('대기자', {'win':2})['win'], 0, wl_id, '대기'))
                             conn.cursor().execute("DELETE FROM event_matches WHERE event_id=? AND round=?", (event_id, int(r_num)))
                             conn.cursor().execute("DELETE FROM event_points_log WHERE event_id=? AND match_id LIKE ?", (event_id, f"EVT{event_id}_R{r_num}_C%"))
                             conn.cursor().execute("UPDATE events SET bracket_json=? WHERE id=?", (json.dumps(st.session_state['event_tournament_data'], default=str), event_id))
@@ -891,7 +890,7 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
                                 save_active_tournament(target_date, st.session_state['tournament_data'], st.session_state.get('gen_params'))
                             conn.commit()
                         finally: conn.close()
-                        st.success("교체 완료!"); st.rerun()
+                        st.session_state[regen_mode_key] = False; st.success("교체 완료!"); st.rerun()
 
 # ==========================================
 # 3단계: 메인 메뉴 UI
@@ -948,7 +947,6 @@ if menu == "대진표":
 
             if t_data:
                 if view_mode == "개인별":
-                    # 개인별 선택시, 내가 포함된 전체 라운드가 최우선 표시됨
                     for r_num, round_data in t_data.items():
                         render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, target_date=active_date, court_names=reg_court_names)
                     display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, filter_name)
@@ -1513,12 +1511,6 @@ elif menu == "이벤트":
                         if not a_players or not b_players: st.error("양 팀 선수를 선택해주세요.")
                         else:
                             win_res = "A팀 승리" if score_a > score_b else "B팀 승리" if score_b > score_a else "무승부"
-                            pa_val, pb_val = "미지정", "미지정"
-                            if ma_pos == "A-1" and len(a_list)>1: pa_val = f"{a_list[0]}(포) / {a_list[1]}(백)"
-                            elif ma_pos == "A-2" and len(a_list)>1: pa_val = f"{a_list[1]}(포) / {a_list[0]}(백)"
-                            if mb_pos == "B-1" and len(b_list)>1: pb_val = f"{b_list[0]}(포) / {b_list[1]}(백)"
-                            elif mb_pos == "B-2" and len(b_list)>1: pb_val = f"{b_list[1]}(포) / {b_list[0]}(백)"
-
                             match_id = f"EVT_{datetime.now().strftime('%Y%m%d%H%M%S')}"
                             a_str, b_str = ",".join(a_players), ",".join(b_players)
                             conn = get_db_conn()
@@ -1682,7 +1674,8 @@ elif menu == "관리자":
             try: events_df = pd.read_sql_query("SELECT * FROM events ORDER BY id DESC", conn)
             finally: conn.close()
             
-            if events_df.empty: st.warning("위에서 이벤트를 먼저 만들어주세요.")
+            if events_df.empty: 
+                st.warning("위에서 이벤트를 먼저 만들어주세요.")
             else:
                 options = [f"[{row['event_date']}] {row['event_name']}" for _, row in events_df.iterrows()]
                 selected_event_str = st.selectbox("적용할 이벤트 방 선택", options, key="evt_sel_for_gen_admin")
@@ -1817,15 +1810,15 @@ elif menu == "관리자":
                     with c_no:
                         if st.button("취소", use_container_width=True, key="btn_evt_gen_cancel_admin"): st.session_state.gen_confirm_evt_admin = False; st.rerun()
                             
-            b_json = selected_event.get('bracket_json')
-            if pd.notna(b_json) and str(b_json).strip() not in ["", "None", "nan"]:
-                st.markdown("<br><h3 style='color:#1976D2;'>👇 생성된 이벤트 대진표 관리 (라운드 단일 재생성/인원 교체)</h3>", unsafe_allow_html=True)
-                st.session_state['event_tournament_data'] = json.loads(b_json)
-                e_gen_json = selected_event.get('gen_params_json')
-                e_gen = json.loads(e_gen_json) if e_gen_json and pd.notna(e_gen_json) else None
-                
-                for r_num, round_data in st.session_state['event_tournament_data'].items():
-                    render_horizontal_bracket(r_num, round_data, is_admin=True, filter_name="전체 보기", is_event=True, event_id=e_id, target_date=selected_event['event_date'], court_names=e_gen.get('court_names') if e_gen else None)
+                b_json = selected_event.get('bracket_json')
+                if pd.notna(b_json) and str(b_json).strip() not in ["", "None", "nan"]:
+                    st.markdown("<br><h3 style='color:#1976D2;'>👇 생성된 이벤트 대진표 관리 (라운드 단일 재생성/인원 교체)</h3>", unsafe_allow_html=True)
+                    st.session_state['event_tournament_data'] = json.loads(b_json)
+                    e_gen_json = selected_event.get('gen_params_json')
+                    e_gen = json.loads(e_gen_json) if e_gen_json and pd.notna(e_gen_json) else None
+                    
+                    for r_num, round_data in st.session_state['event_tournament_data'].items():
+                        render_horizontal_bracket(r_num, round_data, is_admin=True, filter_name="전체 보기", is_event=True, event_id=e_id, target_date=selected_event['event_date'], court_names=e_gen.get('court_names') if e_gen else None)
         
         with tab_reg:
             with st.expander("⚠️ 데이터 초기화 (테스트 기록 삭제)", expanded=False):
@@ -1922,7 +1915,7 @@ elif menu == "관리자":
                             conn.cursor().execute("UPDATE members SET is_guest=0 WHERE name=?", (up_g,))
                             conn.commit()
                         finally: conn.close()
-                        retro_calculate_points_for_user(up_g); st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
+                        st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
                         
                 st.divider()
                 st.markdown("##### ❌ 회원 삭제")
@@ -1980,7 +1973,7 @@ elif menu == "관리자":
                         with c_t2: ta_2 = st.selectbox(f"A-2", ["선택"] + selected_names, key=f"ta_2_reg_{i}")
                         with c_t3: tb_1 = st.selectbox(f"B-1", ["선택"] + selected_names, key=f"tb_1_reg_{i}")
                         with c_t4: tb_2 = st.selectbox(f"B-2", ["선택"] + selected_names, key=f"tb_2_reg_{i}")
-                        if "선택" not in [ta1, ta2, tb1, tb2]: special_data_list.append(((ta_1, ta_2), (tb_1, tb_2)))
+                        if "선택" not in [ta_1, ta_2, tb1, tb2]: special_data_list.append(((ta_1, ta_2), (tb_1, tb_2)))
                     c_btn1, c_btn2 = st.columns(2)
                     with c_btn1:
                         if st.button("➕ 대결 추가하기"): st.session_state['team_count'] += 1; st.rerun()

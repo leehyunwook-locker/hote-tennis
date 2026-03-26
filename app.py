@@ -208,7 +208,7 @@ def get_next_up_matches(t_data, court_names):
                             'team_b': tb_n_display
                         })
                         next_up_set.add((str(r), c))
-                    break # 각 코트당 가장 빠른 미입력 매치 1개만 찾고 다음 코트로 이동
+                    break
     return next_up_details, next_up_set
 
 # ==========================================
@@ -678,7 +678,6 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
     if not st.session_state[edit_mode_key]:
         next_up_html = f"<div class='pulse-bg' style='background:linear-gradient(90deg, #ffcdd2, #ffebee); color:#c62828; padding:6px; border-radius:5px; text-align:center; font-weight:900; margin-bottom:8px; font-size:14px; border-left:4px solid #d32f2f;'>👉 지금 [ {c_name_display} 코트 ] 출전 바랍니다!</div>" if is_next_up else ""
         
-        # 띄어쓰기로 인한 HTML 노출 에러 방지 (한 줄로 결합)
         html_str = f"<div style='border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-bottom: 5px; background-color: #fff;'>{next_up_html}<div style='font-size:12px; color:#555; margin-bottom:3px;'>[🏆 {r_num}R / {c_name_display} 코트]</div><div class='wrap-text' style='font-size:16px; font-weight:900; color:#111;'>{ta_n_display} <span style='color:#d32f2f; font-size:14px;'>VS</span> {tb_n_display}</div><div class='nowrap-text' style='font-size:13px; margin-top:3px; margin-bottom:5px;'>👉 결과: {status_text}</div></div>"
         st.markdown(html_str, unsafe_allow_html=True)
         
@@ -1938,17 +1937,25 @@ elif menu == "관리자":
 
                 e_opt, e_sub_opt, e_spec = "기본 (평점 우선)", "기본 (평점 우선)", []
 
+                b_json_check = selected_event.get('bracket_json')
+                has_bracket = pd.notna(b_json_check) and str(b_json_check).strip() not in ["", "None", "nan", "null"]
+
                 if 'gen_confirm_evt_admin' not in st.session_state: st.session_state.gen_confirm_evt_admin = False
-                conn = get_db_conn()
-                try: existing_e_matches = pd.read_sql_query("SELECT COUNT(*) FROM event_matches WHERE event_id=?", conn, params=(e_id,)).iloc[0,0]
-                finally: conn.close()
 
                 if st.button("🔥 스위치 온 (전체 라운드 대진표 생성)", type="primary", use_container_width=True, key="btn_evt_gen_start_admin"):
-                    if existing_e_matches > 0: st.session_state.gen_confirm_evt_admin = True
+                    if has_bracket: st.session_state.gen_confirm_evt_admin = True
                     else:
                         st.session_state.gen_confirm_evt_admin = False
                         evt_team_rosters = {'A': [strip_gender(n) for n in str(selected_event.get('team_1_members', '')).split(',') if n], 'B': [strip_gender(n) for n in str(selected_event.get('team_2_members', '')).split(',') if n]} if is_team_match else None
-                            
+                        
+                        # 안전 장치: 기존 로그 삭제 (유령 대기자 방지)
+                        conn = get_db_conn()
+                        try:
+                            conn.cursor().execute("DELETE FROM event_points_log WHERE event_id=?", (e_id,))
+                            conn.commit()
+                        except: pass
+                        finally: conn.close()
+
                         new_bracket = {}
                         for r in range(1, int(e_r_cnt) + 1):
                             curr_round_players = []
@@ -1965,13 +1972,11 @@ elif menu == "관리자":
                         try:
                             for r_str, r_data in new_bracket.items():
                                 wl_id = f"EVT{e_id}_R{r_str}_Waitlist"
+                                conn.cursor().execute("DELETE FROM event_points_log WHERE match_id=?", (wl_id,))
                                 for w in r_data['waitlist']: conn.cursor().execute("INSERT INTO event_points_log (event_id, name, points, games, match_id, result) VALUES (?, ?, ?, ?, ?, ?)", (e_id, str(w['name']), rules.get('대기자', {'win':2})['win'], 0, wl_id, '대기'))
                             e_gen_params['c_cnt'] = e_c_cnt
                             e_gen_params['court_names'] = e_court_names
                             e_gen_params['play_mode'] = e_play_mode
-                            e_gen_params['opt'] = e_opt
-                            e_gen_params['sub_opt'] = e_sub_opt
-                            e_gen_params['spec'] = e_spec
                             e_gen_params['selected_names'] = final_selected_e
                             conn.cursor().execute("UPDATE events SET bracket_json=?, gen_params_json=? WHERE id=?", (json.dumps(new_bracket, default=str), json.dumps(e_gen_params), e_id))
                             conn.commit()
@@ -1986,7 +1991,7 @@ elif menu == "관리자":
                             conn = get_db_conn()
                             try:
                                 conn.cursor().execute("DELETE FROM event_matches WHERE event_id=? AND id LIKE '%_R%'", (e_id,))
-                                conn.cursor().execute("DELETE FROM event_points_log WHERE match_id LIKE '%_R%'")
+                                conn.cursor().execute("DELETE FROM event_points_log WHERE event_id=? AND match_id LIKE '%_R%'", (e_id,))
                                 conn.commit()
                             finally: conn.close()
                             
@@ -2007,13 +2012,11 @@ elif menu == "관리자":
                             try:
                                 for r_str, r_data in new_bracket.items():
                                     wl_id = f"EVT{e_id}_R{r_str}_Waitlist"
+                                    conn.cursor().execute("DELETE FROM event_points_log WHERE match_id=?", (wl_id,))
                                     for w in r_data['waitlist']: conn.cursor().execute("INSERT INTO event_points_log (event_id, name, points, games, match_id, result) VALUES (?, ?, ?, ?, ?, ?)", (e_id, str(w['name']), rules.get('대기자', {'win':2})['win'], 0, wl_id, '대기'))
                                 e_gen_params['c_cnt'] = e_c_cnt
                                 e_gen_params['court_names'] = e_court_names
                                 e_gen_params['play_mode'] = e_play_mode
-                                e_gen_params['opt'] = e_opt
-                                e_gen_params['sub_opt'] = e_sub_opt
-                                e_gen_params['spec'] = e_spec
                                 e_gen_params['selected_names'] = final_selected_e
                                 conn.cursor().execute("UPDATE events SET bracket_json=?, gen_params_json=? WHERE id=?", (json.dumps(new_bracket, default=str), json.dumps(e_gen_params), e_id))
                                 conn.commit()
@@ -2142,7 +2145,7 @@ elif menu == "관리자":
                             conn.cursor().execute("UPDATE members SET is_guest=0 WHERE name=?", (up_g,))
                             conn.commit()
                         finally: conn.close()
-                        retro_calculate_points_for_user(up_g); st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
+                        st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
                         
                 st.divider()
                 st.markdown("##### ❌ 회원 삭제")
@@ -2215,15 +2218,23 @@ elif menu == "관리자":
                         if st.session_state['team_count'] > 1 and st.button("➖ 대결 줄이기"): st.session_state['team_count'] -= 1; st.rerun()
             else: opt, sub_opt, special_data_list = "단식", "기본 (평점 우선)", []
 
+            has_reg_bracket = bool(st.session_state.get('tournament_data'))
             if 'gen_confirm_reg' not in st.session_state: st.session_state.gen_confirm_reg = False
-            conn = get_db_conn()
-            try: existing_matches = pd.read_sql_query("SELECT COUNT(*) FROM match_history WHERE game_date=?", conn, params=(m_date,)).iloc[0,0]
-            finally: conn.close()
 
             if st.button("🚀 정규 대진표 생성", type="primary", use_container_width=True, key="btn_reg_gen_start"):
-                if existing_matches > 0: st.session_state.gen_confirm_reg = True
+                if has_reg_bracket and st.session_state.get('match_date') == m_date: 
+                    st.session_state.gen_confirm_reg = True
                 else:
                     st.session_state.gen_confirm_reg = False
+                    
+                    conn = get_db_conn()
+                    try:
+                        conn.cursor().execute("DELETE FROM match_history WHERE game_date=?", (m_date,))
+                        conn.cursor().execute("DELETE FROM points_log WHERE input_date=? AND source_id LIKE '%_R%'", (m_date,))
+                        conn.commit()
+                    except: pass
+                    finally: conn.close()
+
                     st.session_state['match_date'] = m_date 
                     gen_params = {'r_cnt': r_cnt, 'c_cnt': c_cnt, 'court_names': reg_court_names, 'opt': opt, 'sub_opt': sub_opt, 'play_mode': play_mode, 'special_data': special_data_list, 'selected_names': selected_names}
                     st.session_state['gen_params'] = gen_params
@@ -2259,7 +2270,7 @@ elif menu == "관리자":
                         conn = get_db_conn()
                         try:
                             conn.cursor().execute("DELETE FROM match_history WHERE game_date=?", (m_date,))
-                            conn.cursor().execute("DELETE FROM points_log WHERE input_date=? AND source_id LIKE '%_C%'", (m_date,))
+                            conn.cursor().execute("DELETE FROM points_log WHERE input_date=? AND source_id LIKE '%_R%'", (m_date,))
                             conn.commit()
                         finally: conn.close()
                         

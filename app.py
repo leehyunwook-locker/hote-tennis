@@ -51,6 +51,9 @@ st.markdown("""
     input[type="number"] { text-align: center; font-weight: bold; font-size: 18px !important; background-color: #f8f9fa; border: 1px solid #cfd8dc; border-radius: 5px; height: 42px !important; white-space: nowrap !important; padding: 0 !important;}
     div[data-testid="stButton"] button { height: 42px !important; padding: 0px 5px; font-size: 14px; margin-top: 0px; white-space: nowrap !important;}
     
+    .pulse-bg { animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    
     @media (max-width: 640px) {
         [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; overflow: hidden !important; }
         [data-testid="stHorizontalBlock"] > div { min-width: 0 !important; padding: 0 3px !important; }
@@ -127,9 +130,8 @@ def init_db():
         conn.commit()
     finally: conn.close()
 
-if 'db_initialized' not in st.session_state:
-    init_db()
-    st.session_state['db_initialized'] = True
+# 무조건 스크립트 시작 시 DB 복구 및 확인 (클라우드 환경 DatabaseError 차단)
+init_db()
 
 if 'pair_count' not in st.session_state: st.session_state['pair_count'] = 1
 if 'team_count' not in st.session_state: st.session_state['team_count'] = 1
@@ -174,6 +176,26 @@ def get_point_rules():
     finally: conn.close()
 
 def strip_gender(s): return s.replace('(여)','').replace('(남)','').replace('(G)','').strip() if isinstance(s, str) else s
+
+# ==========================================
+# 코트별 자동 출전 추적기
+# ==========================================
+def get_next_up_matches(t_data):
+    next_up = set()
+    if not t_data: return next_up
+    try: r_keys = sorted([str(k) for k in t_data.keys()], key=lambda x: int(x))
+    except: return next_up
+    if not r_keys: return next_up
+    
+    c_cnt = max([len(t_data[r]['matches']) for r in r_keys])
+    
+    for c in range(c_cnt):
+        for r in r_keys:
+            if c < len(t_data[r]['matches']):
+                if t_data[r]['matches'][c]['winner'] == '입력 대기':
+                    next_up.add((r, c))
+                    break # 각 코트별로 가장 먼저 비어있는(입력 대기) 라운드를 찾고 다음 코트로 넘어감
+    return next_up
 
 # ==========================================
 # 실시간 순위, 미입력 안내 렌더링 
@@ -270,7 +292,8 @@ def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시�
     st.divider()
     return agg
 
-def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all_ex_m, court_names, filter_name="전체 보기"):
+def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all_ex_m, court_names, filter_name="전체 보기", next_up_matches=None):
+    if next_up_matches is None: next_up_matches = set()
     if not t_data: return
     if court_names is None: court_names = [str(i+1) for i in range(20)]
     try: r_keys = sorted(list(t_data.keys()), key=lambda x: int(x))
@@ -300,7 +323,7 @@ def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all
                 st.markdown("<div style='padding:5px; background-color:#fff3e0; border-radius:8px; border:2px solid #ffb74d; margin-bottom:15px;'>", unsafe_allow_html=True)
                 for r_num, c_idx, m in missing_matches:
                     c_name = court_names[c_idx] if c_idx < len(court_names) else str(c_idx+1)
-                    render_match_card(r_num, c_idx, m, False, filter_name, is_event, event_id, target_date, c_name, f"{uniq_id}_m", all_ex_m, auto_expand=False)
+                    render_match_card(r_num, c_idx, m, False, filter_name, is_event, event_id, target_date, c_name, f"{uniq_id}_m", all_ex_m, auto_expand=False, next_up_matches=next_up_matches)
                 st.markdown("</div>", unsafe_allow_html=True)
 
 def display_wait_counts_db(target_date=None, event_id=None):
@@ -577,7 +600,10 @@ def save_active_tournament(m_date, t_data, gen_params=None):
     finally: conn.close()
 
 # --- 라운드, 개별 매치 UI 렌더링 카드 ---
-def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, event_id, target_date, c_name_display, uniq_id, all_ex_m, auto_expand=False):
+def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, event_id, target_date, c_name_display, uniq_id, all_ex_m, auto_expand=False, next_up_matches=None):
+    if next_up_matches is None: next_up_matches = set()
+    is_next_up = (str(r_num), c_idx) in next_up_matches
+
     team_a, team_b, current_winner = match['team_a'], match['team_b'], match['winner']
     if current_winner == '취소': return
     
@@ -616,8 +642,11 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
     elif edit_mode_key not in st.session_state: st.session_state[edit_mode_key] = False
 
     if not st.session_state[edit_mode_key]:
+        next_up_html = f"<div class='pulse-bg' style='background:linear-gradient(90deg, #ffcdd2, #ffebee); color:#c62828; padding:6px; border-radius:5px; text-align:center; font-weight:900; margin-bottom:8px; font-size:14px; border-left:4px solid #d32f2f;'>👉 지금 [ {c_name_display} 코트 ] 출전 바랍니다!</div>" if is_next_up else ""
+        
         st.markdown(f"""
         <div style='border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-bottom: 5px; background-color: #fff;'>
+            {next_up_html}
             <div style='font-size:12px; color:#555; margin-bottom:3px;'>[🏆 {r_num}R / {c_name_display} 코트]</div>
             <div class='wrap-text' style='font-size:16px; font-weight:900; color:#111;'>{ta_n_display} <span style='color:#d32f2f; font-size:14px;'>VS</span> {tb_n_display}</div>
             <div class='nowrap-text' style='font-size:13px; margin-top:3px; margin-bottom:5px;'>👉 결과: {status_text}</div>
@@ -741,7 +770,8 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
                     st.session_state[edit_mode_key] = False; st.success("저장 완료!"); st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기", is_event=False, event_id=None, target_date=None, court_names=None):
+def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기", is_event=False, event_id=None, target_date=None, court_names=None, next_up_matches=None):
+    if next_up_matches is None: next_up_matches = set()
     is_my_waitlist = filter_name != "전체 보기" and filter_name in [p['name'] for p in round_data['waitlist']]
     filtered_matches = []
     is_my_match_exist = False
@@ -754,7 +784,7 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
             filtered_matches.append((c_idx, match))
             if filter_name != "전체 보기": is_my_match_exist = True
             
-    # 개인별 보기일 때, 내가 출전하지 않는 라운드(대기 라운드 포함)는 아예 화면에서 안 보이게 숨김
+    # 개인별 보기일 때, 내가 출전하지 않는 라운드(대기 라운드 포함)는 아예 화면에서 숨김
     if filter_name != "전체 보기" and not is_my_match_exist: return False
 
     has_unentered = False
@@ -793,7 +823,7 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
 
         for c_idx, match in filtered_matches:
             c_name = court_names[c_idx] if c_idx < len(court_names) else str(c_idx + 1)
-            render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, event_id, target_date, c_name, uniq_id, all_ex_m, auto_expand)
+            render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, event_id, target_date, c_name, uniq_id, all_ex_m, auto_expand, next_up_matches)
         
         if is_admin:
             regen_mode_key = f"regen_mode_{r_num}_{uniq_id}"
@@ -992,12 +1022,13 @@ if menu == "대진표":
             
             gen_params = st.session_state.get('gen_params') or {}
             reg_court_names = gen_params.get('court_names', [str(i+1) for i in range(20)])
+            next_up_matches = get_next_up_matches(t_data)
 
             if t_data:
                 if view_mode == "라운드별":
                     for r_num, round_data in t_data.items():
-                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기", target_date=active_date, court_names=reg_court_names)
-                    display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, "전체 보기")
+                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기", target_date=active_date, court_names=reg_court_names, next_up_matches=next_up_matches)
+                    display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, "전체 보기", next_up_matches=next_up_matches)
                 
                 elif view_mode == "코트별":
                     courts_dict = {}
@@ -1011,13 +1042,13 @@ if menu == "대진표":
                         c_name = reg_court_names[c_idx] if c_idx < len(reg_court_names) else str(c_idx+1)
                         with st.expander(f"🎾 [{c_name} 코트] 전체 매치", expanded=False):
                             for r_num, match in courts_dict[c_idx]:
-                                render_match_card(r_num, c_idx, match, False, "전체 보기", False, None, active_date, c_name, uniq_id, all_ex_m, auto_expand=False)
-                    display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, "전체 보기")
+                                render_match_card(r_num, c_idx, match, False, "전체 보기", False, None, active_date, c_name, uniq_id, all_ex_m, auto_expand=False, next_up_matches=next_up_matches)
+                    display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, "전체 보기", next_up_matches=next_up_matches)
 
                 elif view_mode == "개인별":
                     for r_num, round_data in t_data.items():
-                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, target_date=active_date, court_names=reg_court_names)
-                    display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, filter_name)
+                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, target_date=active_date, court_names=reg_court_names, next_up_matches=next_up_matches)
+                    display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, filter_name, next_up_matches=next_up_matches)
 
                 conn = get_db_conn()
                 try: manual_df = pd.read_sql_query("SELECT id, team_a, team_b, winner, score_a, score_b FROM match_history WHERE game_date=? AND id LIKE 'MANUAL_%'", conn, params=(active_date,))
@@ -1456,11 +1487,13 @@ elif menu == "이벤트":
                 conn = get_db_conn()
                 try: all_ex_m = pd.read_sql_query("SELECT id, score_a, score_b, team_a_pos, team_b_pos FROM event_matches WHERE event_id=?", conn, params=(e_id,))
                 finally: conn.close()
+                
+                next_up_matches = get_next_up_matches(t_data)
 
                 if view_mode == "라운드별":
                     for r_num, round_data in t_data.items():
-                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기", is_event=True, event_id=e_id, target_date=selected_event['event_date'], court_names=evt_court_names)
-                    display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, "전체 보기")
+                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기", is_event=True, event_id=e_id, target_date=selected_event['event_date'], court_names=evt_court_names, next_up_matches=next_up_matches)
+                    display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, "전체 보기", next_up_matches=next_up_matches)
                 
                 elif view_mode == "코트별":
                     courts_dict = {}
@@ -1472,13 +1505,13 @@ elif menu == "이벤트":
                     for c_idx in sorted(courts_dict.keys()):
                         c_name = evt_court_names[c_idx] if c_idx < len(evt_court_names) else str(c_idx+1)
                         with st.expander(f"🎾 [{c_name} 코트] 전체 매치", expanded=False):
-                            for r_num, match in courts_dict[c_idx]: render_match_card(r_num, c_idx, match, False, "전체 보기", True, e_id, selected_event['event_date'], c_name, uniq_id, all_ex_m, auto_expand=False)
-                    display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, "전체 보기")
+                            for r_num, match in courts_dict[c_idx]: render_match_card(r_num, c_idx, match, False, "전체 보기", True, e_id, selected_event['event_date'], c_name, uniq_id, all_ex_m, auto_expand=False, next_up_matches=next_up_matches)
+                    display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, "전체 보기", next_up_matches=next_up_matches)
                                 
                 elif view_mode == "개인별":
                     for r_num, round_data in t_data.items():
-                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, is_event=True, event_id=e_id, target_date=selected_event['event_date'], court_names=evt_court_names)
-                    display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, filter_name)
+                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, is_event=True, event_id=e_id, target_date=selected_event['event_date'], court_names=evt_court_names, next_up_matches=next_up_matches)
+                    display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, filter_name, next_up_matches=next_up_matches)
 
             except Exception as e:
                 st.error(f"대진표 에러. 관리자 메뉴에서 전체 다시 생성 요망. ({e})")
@@ -1606,6 +1639,7 @@ elif menu == "이벤트":
                     st.dataframe(styled_all, use_container_width=True, hide_index=True)
                     
                 def get_gender_rank(df_g):
+                    if df_g.empty: return df_g
                     df_g['승'] = df_g['승-무-패'].apply(lambda x: int(x.split('-')[0]))
                     df_g['패'] = df_g['승-무-패'].apply(lambda x: int(x.split('-')[2]))
                     df_g = df_g.sort_values(by=['자격미달', '승점', '총득실차', '승', '패'], ascending=[True, False, False, False, True]).reset_index(drop=True)
@@ -1624,13 +1658,17 @@ elif menu == "이벤트":
 
                 with tab_m:
                     df_m = get_gender_rank(final_table[final_table['성별'] == '남'].copy())
-                    styled_m = df_m.drop(columns=['자격미달', '성별']).style.apply(lambda r: ['color: #9e9e9e; text-decoration: line-through;']*len(r) if df_m.loc[r.name, '자격미달'] else ['']*len(r), axis=1)
-                    st.dataframe(styled_m, use_container_width=True, hide_index=True)
+                    if not df_m.empty:
+                        styled_m = df_m.drop(columns=['자격미달', '성별']).style.apply(lambda r: ['color: #9e9e9e; text-decoration: line-through;']*len(r) if df_m.loc[r.name, '자격미달'] else ['']*len(r), axis=1)
+                        st.dataframe(styled_m, use_container_width=True, hide_index=True)
+                    else: st.info("데이터가 없습니다.")
 
                 with tab_f:
                     df_f = get_gender_rank(final_table[final_table['성별'] == '여'].copy())
-                    styled_f = df_f.drop(columns=['자격미달', '성별']).style.apply(lambda r: ['color: #9e9e9e; text-decoration: line-through;']*len(r) if df_f.loc[r.name, '자격미달'] else ['']*len(r), axis=1)
-                    st.dataframe(styled_f, use_container_width=True, hide_index=True)
+                    if not df_f.empty:
+                        styled_f = df_f.drop(columns=['자격미달', '성별']).style.apply(lambda r: ['color: #9e9e9e; text-decoration: line-through;']*len(r) if df_f.loc[r.name, '자격미달'] else ['']*len(r), axis=1)
+                        st.dataframe(styled_f, use_container_width=True, hide_index=True)
+                    else: st.info("데이터가 없습니다.")
                     
             display_wait_counts_db(event_id=e_id)
 

@@ -29,7 +29,7 @@ st.markdown("""
     div[data-baseweb="select"] { margin-top: -5px; font-size: 13px !important; }
     
     .table-wrapper { overflow-x: auto; width: 100%; max-height: 65vh; margin-bottom: 1rem; border: 1px solid #ddd; }
-    table.rank-table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: center; font-size: 12px; font-family: sans-serif; white-space: nowrap; }
+    table.rank-table { border-collapse: separate; border-spacing: 0; width: 100%; text-align: center; font-size: 13px; font-family: sans-serif; white-space: nowrap; }
     table.rank-table td, table.rank-table th { padding: 8px 5px; border-bottom: 1px solid #ddd; border-right: 1px solid #ddd; text-align: center; }
     table.rank-table th { position: sticky; top: 0; background-color: #f0f2f6; z-index: 4; }
     table.rank-table th:nth-child(1), table.rank-table td:nth-child(1) { position: sticky; left: 0px; background-color: #f9f9f9; z-index: 3; min-width: 35px; }
@@ -176,7 +176,7 @@ def get_point_rules():
 def strip_gender(s): return s.replace('(여)','').replace('(남)','').replace('(G)','').strip() if isinstance(s, str) else s
 
 # ==========================================
-# 실시간 순위, 미입력 폼, 대기자 표시 로직 
+# 실시간 순위, 미입력 안내, 대기자 표시 로직 
 # ==========================================
 def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시간 순위"):
     if pts_df.empty:
@@ -288,7 +288,7 @@ def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all
                         b_names = [p['name'] for p in m['team_b']]
                         if filter_name not in a_names and filter_name not in b_names:
                             continue
-                    missing_matches.append((str(r), c_idx, m))
+                    missing_matches.append((r_str, c_idx, m))
         
         if missing_matches:
             st.markdown("<div style='padding:10px 5px; background-color:#fff3e0; border-radius:8px; border:2px solid #ffb74d; margin-bottom:15px;'>", unsafe_allow_html=True)
@@ -718,7 +718,7 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
                                                   (m_id_check, target_date, ta_n_display, tb_n_display, win_res, int(score_a), int(score_b), pa_val, pb_val))
                         conn.commit()
                     finally: conn.close()
-                    assign_points_db(m_id_check, target_date if not is_event else target_date, team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
+                    assign_points_db(m_id_check, target_date if not is_event else selected_event['event_date'], team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
                     st.session_state[edit_mode_key] = False; st.success("저장 완료!"); st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -891,7 +891,7 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
                                 save_active_tournament(target_date, st.session_state['tournament_data'], st.session_state.get('gen_params'))
                             conn.commit()
                         finally: conn.close()
-                        st.session_state[regen_mode_key] = False; st.success("교체 완료!"); st.rerun()
+                        st.success("교체 완료!"); st.rerun()
 
 # ==========================================
 # 3단계: 메인 메뉴 UI
@@ -948,6 +948,7 @@ if menu == "대진표":
 
             if t_data:
                 if view_mode == "개인별":
+                    # 개인별 선택시, 내가 포함된 전체 라운드가 최우선 표시됨
                     for r_num, round_data in t_data.items():
                         render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, target_date=active_date, court_names=reg_court_names)
                     display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, filter_name)
@@ -1509,7 +1510,7 @@ elif menu == "이벤트":
                     if st.button("저장", type="primary", use_container_width=True, key="me_btn"):
                         a_players = [strip_gender(x) for x in [st.session_state.i_ea1, st.session_state.i_ea2] if x not in ["선택", "단식"]]
                         b_players = [strip_gender(x) for x in [st.session_state.i_eb1, st.session_state.i_eb2] if x not in ["선택", "단식"]]
-                        if not a_players or not b_players: st.error("선택 오류")
+                        if not a_players or not b_players: st.error("양 팀 선수를 선택해주세요.")
                         else:
                             win_res = "A팀 승리" if score_a > score_b else "B팀 승리" if score_b > score_a else "무승부"
                             pa_val, pb_val = "미지정", "미지정"
@@ -1533,6 +1534,18 @@ elif menu == "이벤트":
                             st.success("저장 완료!"); st.rerun()
 
             display_wait_counts_db(event_id=e_id)
+
+        if not matches_check.empty and not agg.empty and '순위' in agg.columns:
+            st.divider()
+            st.markdown("### 📊 상세 성적표")
+            final_table = agg[['순위', 'name', '경기수', '승점', '평균승점', '승', '패', '무', '승률', '득점', '득실차', '평균득실차', '자격미달']].copy()
+            final_table['승-무-패'] = final_table.apply(lambda x: f"{int(x['승'])}-{int(x['무'])}-{int(x['패'])}", axis=1)
+            final_table = final_table[['순위', 'name', '경기수', '승점', '평균승점', '승-무-패', '승률', '득점', '득실차', '평균득실차', '자격미달']]
+            final_table.columns = ['순위', '이름', '게임수', '총승점', '평균승점', '승-무-패', '승률', '총득점', '총득실차', '평균득실', '자격미달']
+            def style_disqualified(row): return ['color: #9e9e9e; text-decoration: line-through;'] * len(row) if final_table.loc[row.name, '자격미달'] else [''] * len(row)
+            styled_table = final_table.drop(columns=['자격미달']).style.apply(style_disqualified, axis=1)
+            st.dataframe(styled_table, use_container_width=True, hide_index=True)
+            st.caption(f"※ 최소 게임수({min_games}게임) 미달자는 순위 산정에서 밀리며, 회색 취소선으로 표시됩니다.")
 
 # ----------------------------------------
 # 5. 관리자 메뉴
@@ -1967,7 +1980,7 @@ elif menu == "관리자":
                         with c_t2: ta_2 = st.selectbox(f"A-2", ["선택"] + selected_names, key=f"ta_2_reg_{i}")
                         with c_t3: tb_1 = st.selectbox(f"B-1", ["선택"] + selected_names, key=f"tb_1_reg_{i}")
                         with c_t4: tb_2 = st.selectbox(f"B-2", ["선택"] + selected_names, key=f"tb_2_reg_{i}")
-                        if "선택" not in [ta_1, ta_2, tb_1, tb_2]: special_data_list.append(((ta_1, ta_2), (tb_1, tb_2)))
+                        if "선택" not in [ta1, ta2, tb1, tb2]: special_data_list.append(((ta_1, ta_2), (tb_1, tb_2)))
                     c_btn1, c_btn2 = st.columns(2)
                     with c_btn1:
                         if st.button("➕ 대결 추가하기"): st.session_state['team_count'] += 1; st.rerun()

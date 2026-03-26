@@ -130,7 +130,7 @@ def init_db():
         conn.commit()
     finally: conn.close()
 
-# 무조건 스크립트 시작 시 DB 복구 및 확인 (클라우드 환경 DatabaseError 차단)
+# 무조건 스크립트 시작 시 DB 복구 및 확인
 init_db()
 
 if 'pair_count' not in st.session_state: st.session_state['pair_count'] = 1
@@ -194,7 +194,7 @@ def get_next_up_matches(t_data):
             if c < len(t_data[r]['matches']):
                 if t_data[r]['matches'][c]['winner'] == '입력 대기':
                     next_up.add((r, c))
-                    break # 각 코트별로 가장 먼저 비어있는(입력 대기) 라운드를 찾고 다음 코트로 넘어감
+                    break
     return next_up
 
 # ==========================================
@@ -443,14 +443,13 @@ def generate_single_round(players_df, court_count, play_mode, match_option, spec
             for pa in ta:
                 for pb in tb: past_opponents[pa].add(pb); past_opponents[pb].add(pa)
                 
-    # 직전 라운드 대기자는 이번 라운드에 무조건 코트 배정 (Play Count 강력 차감)
     prev_r_num = str(int(current_r_num) - 1)
     prev_waiters = [w['name'] for w in all_rounds_data.get(prev_r_num, {}).get('waitlist', [])]
 
     def waitlist_sort_key(x):
         cnt = play_counts[x['name']]
         if x['name'] in prev_waiters:
-            cnt -= 1000  # 직전 라운드 대기자는 무조건 코트에 투입
+            cnt -= 1000 
         return (cnt, x['eff_rating'])
     
     waitlist = []
@@ -643,15 +642,15 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
 
     if not st.session_state[edit_mode_key]:
         next_up_html = f"<div class='pulse-bg' style='background:linear-gradient(90deg, #ffcdd2, #ffebee); color:#c62828; padding:6px; border-radius:5px; text-align:center; font-weight:900; margin-bottom:8px; font-size:14px; border-left:4px solid #d32f2f;'>👉 지금 [ {c_name_display} 코트 ] 출전 바랍니다!</div>" if is_next_up else ""
-        
-        st.markdown(f"""
-        <div style='border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-bottom: 5px; background-color: #fff;'>
-            {next_up_html}
-            <div style='font-size:12px; color:#555; margin-bottom:3px;'>[🏆 {r_num}R / {c_name_display} 코트]</div>
-            <div class='wrap-text' style='font-size:16px; font-weight:900; color:#111;'>{ta_n_display} <span style='color:#d32f2f; font-size:14px;'>VS</span> {tb_n_display}</div>
-            <div class='nowrap-text' style='font-size:13px; margin-top:3px; margin-bottom:5px;'>👉 결과: {status_text}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        html_str = (
+            f"<div style='border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin-bottom: 5px; background-color: #fff;'>"
+            f"{next_up_html}"
+            f"<div style='font-size:12px; color:#555; margin-bottom:3px;'>[🏆 {r_num}R / {c_name_display} 코트]</div>"
+            f"<div class='wrap-text' style='font-size:16px; font-weight:900; color:#111;'>{ta_n_display} <span style='color:#d32f2f; font-size:14px;'>VS</span> {tb_n_display}</div>"
+            f"<div class='nowrap-text' style='font-size:13px; margin-top:3px; margin-bottom:5px;'>👉 결과: {status_text}</div>"
+            f"</div>"
+        )
+        st.markdown(html_str, unsafe_allow_html=True)
         
         c_btn1, c_btn2 = st.columns([3, 1.2])
         with c_btn1:
@@ -784,7 +783,6 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
             filtered_matches.append((c_idx, match))
             if filter_name != "전체 보기": is_my_match_exist = True
             
-    # 개인별 보기일 때, 내가 출전하지 않는 라운드(대기 라운드 포함)는 아예 화면에서 숨김
     if filter_name != "전체 보기" and not is_my_match_exist: return False
 
     has_unentered = False
@@ -793,7 +791,6 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
 
     uniq_id = f"evt_{event_id}" if is_event else f"reg_{target_date}"
     
-    # 점수 미등록 표시 로직
     if filter_name != "전체 보기":
         if has_unentered:
             title_text = f"🏆 {r_num} 라운드 ({round_data['option']}) - 🚨 점수 미등록"
@@ -1059,16 +1056,17 @@ if menu == "대진표":
                     for idx, row in manual_df.iterrows():
                         ta_str, tb_str = row['team_a'].replace(',', ' & '), row['team_b'].replace(',', ' & ')
                         display_winner = f"{ta_str} 승리" if row['winner'] == "A팀 승리" else f"{tb_str} 승리" if row['winner'] == "B팀 승리" else row['winner']
-
-                        st.markdown(f"""
-                        <div style='display: flex; justify-content: space-between; align-items: center; background-color: #fff; padding: 10px 5px; border-radius: 5px; border: 1px solid #eee; margin-bottom: 5px;'>
-                            <div class='wrap-text' style='flex: 1; text-align: right; font-size: 14px; font-weight: bold; color: #333;'>{ta_str}</div>
-                            <div style='flex: 0 0 70px; text-align: center; font-size: 15px; font-weight: 900; color: {"#1976d2" if row['winner'] == 'A팀 승리' else "#d32f2f" if row['winner'] == 'B팀 승리' else "#757575"};'>
-                                {"<br>".join([f"{row['score_a']}:{row['score_b']}"]) if row['score_a']>0 or row['score_b']>0 else display_winner}
-                            </div>
-                            <div class='wrap-text' style='flex: 1; text-align: left; font-size: 14px; font-weight: bold; color: #333;'>{tb_str}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        win_color = "#1976d2" if row['winner'] == 'A팀 승리' else "#d32f2f" if row['winner'] == 'B팀 승리' else "#757575"
+                        score_text = f"{row['score_a']}:{row['score_b']}" if row['score_a']>0 or row['score_b']>0 else display_winner
+                        
+                        m_html = (
+                            f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #fff; padding: 10px 5px; border-radius: 5px; border: 1px solid #eee; margin-bottom: 5px;'>"
+                            f"<div class='wrap-text' style='flex: 1; text-align: right; font-size: 14px; font-weight: bold; color: #333;'>{ta_str}</div>"
+                            f"<div style='flex: 0 0 70px; text-align: center; font-size: 15px; font-weight: 900; color: {win_color};'>{score_text}</div>"
+                            f"<div class='wrap-text' style='flex: 1; text-align: left; font-size: 14px; font-weight: bold; color: #333;'>{tb_str}</div>"
+                            f"</div>"
+                        )
+                        st.markdown(m_html, unsafe_allow_html=True)
                         
                         cd1, cd2, cd3 = st.columns([1, 1, 1])
                         with cd2:
@@ -1542,16 +1540,17 @@ elif menu == "이벤트":
                         if "EVT_MAN_" not in str(m['id']): continue 
                         ta_str, tb_str = m['team_a'].replace(',', ' & '), m['team_b'].replace(',', ' & ')
                         display_winner = f"{ta_str} 승리" if m['winner'] == "A팀 승리" else f"{tb_str} 승리" if m['winner'] == "B팀 승리" else m['winner']
+                        win_color = "#1976d2" if m['winner'] == 'A팀 승리' else "#d32f2f" if m['winner'] == 'B팀 승리' else "#757575"
+                        score_text = f"{m['score_a']}:{m['score_b']}" if m['score_a']>0 or m['score_b']>0 else display_winner
                         
-                        st.markdown(f"""
-                        <div style='display: flex; justify-content: space-between; align-items: center; background-color: #fff; padding: 10px 5px; border-radius: 5px; border: 1px solid #eee; margin-bottom: 5px;'>
-                            <div class='wrap-text' style='flex: 1; text-align: right; font-size: 14px; font-weight: bold; color: #333;'>{ta_str}</div>
-                            <div style='flex: 0 0 70px; text-align: center; font-size: 15px; font-weight: 900; color: {"#1976d2" if m['winner'] == 'A팀 승리' else "#d32f2f" if m['winner'] == 'B팀 승리' else "#757575"};'>
-                                {"<br>".join([f"{m['score_a']}:{m['score_b']}"]) if m['score_a']>0 or m['score_b']>0 else display_winner}
-                            </div>
-                            <div class='wrap-text' style='flex: 1; text-align: left; font-size: 14px; font-weight: bold; color: #333;'>{tb_str}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        m_html = (
+                            f"<div style='display: flex; justify-content: space-between; align-items: center; background-color: #fff; padding: 10px 5px; border-radius: 5px; border: 1px solid #eee; margin-bottom: 5px;'>"
+                            f"<div class='wrap-text' style='flex: 1; text-align: right; font-size: 14px; font-weight: bold; color: #333;'>{ta_str}</div>"
+                            f"<div style='flex: 0 0 70px; text-align: center; font-size: 15px; font-weight: 900; color: {win_color};'>{score_text}</div>"
+                            f"<div class='wrap-text' style='flex: 1; text-align: left; font-size: 14px; font-weight: bold; color: #333;'>{tb_str}</div>"
+                            f"</div>"
+                        )
+                        st.markdown(m_html, unsafe_allow_html=True)
                         
                         cd1, cd2, cd3 = st.columns([1, 1, 1])
                         with cd2:
@@ -1604,10 +1603,10 @@ elif menu == "이벤트":
                         else:
                             win_res = "A팀 승리" if score_a > score_b else "B팀 승리" if score_b > score_a else "무승부"
                             pa_val, pb_val = "미지정", "미지정"
-                            if ma_pos == "A-1" and len(a_list)>1: pa_val = f"{a_list[0]}(포) / {a_list[1]}(백)"
-                            elif ma_pos == "A-2" and len(a_list)>1: pa_val = f"{a_list[1]}(포) / {a_list[0]}(백)"
-                            if mb_pos == "B-1" and len(b_list)>1: pb_val = f"{b_list[0]}(포) / {b_list[1]}(백)"
-                            elif mb_pos == "B-2" and len(b_list)>1: pb_val = f"{b_list[1]}(포) / {b_list[0]}(백)"
+                            if ma_pos == "A-1" and len(a_players)>1: pa_val = f"{a_players[0]}(포) / {a_players[1]}(백)"
+                            elif ma_pos == "A-2" and len(a_players)>1: pa_val = f"{a_players[1]}(포) / {a_players[0]}(백)"
+                            if mb_pos == "B-1" and len(b_players)>1: pb_val = f"{b_players[0]}(포) / {b_players[1]}(백)"
+                            elif mb_pos == "B-2" and len(b_players)>1: pb_val = f"{b_players[1]}(포) / {b_players[0]}(백)"
 
                             match_id = f"EVT_MAN_{datetime.now().strftime('%Y%m%d%H%M%S')}"
                             a_str, b_str = ",".join(a_players), ",".join(b_players)
@@ -1922,6 +1921,9 @@ elif menu == "관리자":
                             e_gen_params['c_cnt'] = e_c_cnt
                             e_gen_params['court_names'] = e_court_names
                             e_gen_params['play_mode'] = e_play_mode
+                            e_gen_params['opt'] = e_opt
+                            e_gen_params['sub_opt'] = e_sub_opt
+                            e_gen_params['spec'] = e_spec
                             e_gen_params['selected_names'] = final_selected_e
                             conn.cursor().execute("UPDATE events SET bracket_json=?, gen_params_json=? WHERE id=?", (json.dumps(new_bracket, default=str), json.dumps(e_gen_params), e_id))
                             conn.commit()

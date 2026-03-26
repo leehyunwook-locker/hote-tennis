@@ -184,7 +184,6 @@ def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시�
         return pd.DataFrame()
 
     agg = pts_df.groupby('name').agg(승점=('points', 'sum'), 경기수=('games', 'sum')).reset_index()
-    
     wl_dict = {n: {'승':0, '무':0, '패':0, '득점':0, '실점':0} for n in agg['name']}
     
     if not matches_df.empty:
@@ -192,7 +191,6 @@ def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시�
             ta = [x.strip() for x in str(m['team_a']).replace('&', ',').split(',') if x.strip()]
             tb = [x.strip() for x in str(m['team_b']).replace('&', ',').split(',') if x.strip()]
             w = m['winner']
-            
             try: sa = int(m['score_a'])
             except: sa = 0
             try: sb = int(m['score_b'])
@@ -219,8 +217,11 @@ def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시�
     agg['패'] = agg['name'].map(lambda x: wl_dict.get(x, {}).get('패', 0)).fillna(0).astype(int)
     agg['득점'] = agg['name'].map(lambda x: wl_dict.get(x, {}).get('득점', 0)).fillna(0).astype(int)
     agg['실점'] = agg['name'].map(lambda x: wl_dict.get(x, {}).get('실점', 0)).fillna(0).astype(int)
-
     agg['득실차'] = agg['득점'] - agg['실점']
+    
+    wait_counts = pts_df[pts_df['games'] == 0].groupby('name').size().to_dict()
+    agg['대기'] = agg['name'].map(lambda x: wait_counts.get(x, 0)).fillna(0).astype(int)
+    
     agg['자격미달'] = agg['경기수'] < min_games
 
     agg = agg.sort_values(by=['자격미달', '승점', '득실차', '승', '패'], ascending=[True, False, False, False, True]).reset_index(drop=True)
@@ -266,7 +267,7 @@ def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시�
     st.divider()
     return agg
 
-def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all_ex_m, court_names, filter_name="전체 보기"):
+def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all_ex_m, court_names):
     if not t_data: return
     try: r_keys = sorted(list(t_data.keys()), key=lambda x: int(x))
     except: return
@@ -282,20 +283,14 @@ def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all
             r_val = t_data.get(r_str) or t_data.get(int(r))
             if not r_val: continue
             for c_idx, m in enumerate(r_val['matches']):
-                if m['winner'] == '입력 대기': 
-                    if filter_name != "전체 보기":
-                        a_names = [p['name'] for p in m['team_a']]
-                        b_names = [p['name'] for p in m['team_b']]
-                        if filter_name not in a_names and filter_name not in b_names:
-                            continue
-                    missing_matches.append((str(r), c_idx, m))
+                if m['winner'] == '입력 대기': missing_matches.append((r_str, c_idx, m))
         
         if missing_matches:
             st.markdown("<div style='padding:10px 5px; background-color:#fff3e0; border-radius:8px; border:2px solid #ffb74d; margin-bottom:15px;'>", unsafe_allow_html=True)
             st.markdown("<h4 style='color:#e65100; margin-top:0; margin-bottom:10px; font-weight:900; text-align:center;'>⚠️ 점수 미입력<br><span style='font-size:15px; color:#555;'>(점수를 입력하세요)</span></h4>", unsafe_allow_html=True)
             for r_num, c_idx, m in missing_matches:
                 c_name = court_names[c_idx] if c_idx < len(court_names) else str(c_idx+1)
-                render_match_card(r_num, c_idx, m, False, filter_name, is_event, event_id, target_date, c_name, f"{uniq_id}_m", all_ex_m, auto_expand=True)
+                render_match_card(r_num, c_idx, m, False, "전체 보기", is_event, event_id, target_date, c_name, f"{uniq_id}_m", all_ex_m, auto_expand=False)
             st.markdown("</div>", unsafe_allow_html=True)
 
 def display_wait_counts_db(target_date=None, event_id=None):
@@ -418,7 +413,7 @@ def generate_single_round(players_df, court_count, play_mode, match_option, spec
     waitlist = []
     if needed_waitlist > 0:
         avail_for_wait = [p for p in player_dicts if p['name'] not in reserved_names]
-        # 대기 횟수 최우선, 횟수가 같으면 평점이 높은 사람이 대기하도록 정렬 고도화
+        # 대기자 배정 최적화: 대기 횟수가 적은 사람 > 평점이 높은 사람 순서로 대기하도록 설정
         sorted_by_plays = sorted(avail_for_wait, key=lambda x: (play_counts[x['name']], x['eff_rating']), reverse=True)
         waitlist = sorted_by_plays[:needed_waitlist]
         if len(waitlist) < needed_waitlist:
@@ -591,7 +586,11 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
     display_winner = current_winner
     if current_winner == "A팀 승리": display_winner = f"{ta_n_display} 승리"
     elif current_winner == "B팀 승리": display_winner = f"{tb_n_display} 승리"
-    status_text = f"<span style='color:#1976d2;'>{def_sa} : {def_sb} ({display_winner})</span>" if current_winner not in ['입력 대기'] else f"<span style='color:#757575;'>{current_winner}</span>"
+    
+    if current_winner not in ['입력 대기']:
+        status_text = f"<span style='color:#1976d2;'>{def_sa} : {def_sb} ({display_winner})</span>"
+    else:
+        status_text = f"<span style='color:#e65100; font-weight:bold;'>🚨 점수 미입력 (클릭)</span>"
 
     edit_mode_key = f"edit_mode_{r_num}_{c_idx}_{uniq_id}"
     if auto_expand and edit_mode_key not in st.session_state: st.session_state[edit_mode_key] = True
@@ -719,7 +718,7 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
                                                   (m_id_check, target_date, ta_n_display, tb_n_display, win_res, int(score_a), int(score_b), pa_val, pb_val))
                         conn.commit()
                     finally: conn.close()
-                    assign_points_db(m_id_check, target_date if not is_event else selected_event['event_date'], team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
+                    assign_points_db(m_id_check, target_date if not is_event else target_date, team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
                     st.session_state[edit_mode_key] = False; st.success("저장 완료!"); st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -748,16 +747,16 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
     round_status = ""
     if filter_name != "전체 보기":
         if has_unentered:
-            round_status = " <span style='color:#d32f2f; font-weight:900;'>[🎾 출전] - 🚨 점수 미등록</span>"
-            auto_expand = True
+            round_status = " <span style='color:#d32f2f; font-weight:900;'>- 점수 미등록</span>"
+            auto_expand = False
         else:
-            round_status = " <span style='color:#2e7d32; font-weight:900;'>[🎾 출전] - ✅ 입력 완료</span>"
+            round_status = ""
             auto_expand = False
     else:
         auto_expand = False
         round_status = " <span style='color:#e65100; font-weight:900;'>[💤 휴식]</span>" if is_my_waitlist else ""
 
-    with st.expander(f"🏆 {r_num} 라운드 ({round_data['option']})", expanded=auto_expand):
+    with st.expander(f"🏆 {r_num} 라운드 ({round_data['option']}){round_status}", expanded=auto_expand):
         st.markdown(f"<div style='margin-top:-10px; margin-bottom:10px;'>{round_status}</div>", unsafe_allow_html=True)
         if round_data['waitlist']:
             w_names = [f"{p['name']}(G)" if p.get('is_guest',0) else p['name'] for p in round_data['waitlist']]
@@ -962,7 +961,7 @@ if menu == "대진표":
                 matches_check = pd.read_sql_query("SELECT * FROM match_history WHERE game_date=? AND winner != '입력 대기' AND winner != '취소'", conn, params=(active_date,))
             finally: conn.close()
             
-            render_realtime_podium(pts_df, matches_check, min_games=1, title="🏆 실시간 순위")
+            agg = render_realtime_podium(pts_df, matches_check, min_games=1, title="🏆 실시간 순위")
             
             t_data = st.session_state.get('tournament_data', {})
             uniq_id = f"reg_{active_date}"
@@ -972,7 +971,11 @@ if menu == "대진표":
             reg_court_names = st.session_state.get('gen_params', {}).get('court_names', [str(i+1) for i in range(20)])
 
             if t_data:
-                if view_mode == "라운드별":
+                if view_mode == "개인별":
+                    for r_num, round_data in t_data.items():
+                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, target_date=active_date, court_names=reg_court_names)
+                
+                elif view_mode == "라운드별":
                     display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, "전체 보기")
                     for r_num, round_data in t_data.items():
                         render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="전체 보기", target_date=active_date, court_names=reg_court_names)
@@ -991,11 +994,6 @@ if menu == "대진표":
                         with st.expander(f"🎾 [{c_name} 코트] 전체 매치", expanded=False):
                             for r_num, match in courts_dict[c_idx]:
                                 render_match_card(r_num, c_idx, match, False, "전체 보기", False, None, active_date, c_name, uniq_id, all_ex_m, auto_expand=False)
-                
-                elif view_mode == "개인별":
-                    for r_num, round_data in t_data.items():
-                        render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, target_date=active_date, court_names=reg_court_names)
-                    display_missing_scores(t_data, False, None, active_date, uniq_id, all_ex_m, reg_court_names, filter_name)
 
                 conn = get_db_conn()
                 try: manual_df = pd.read_sql_query("SELECT id, team_a, team_b, winner, score_a, score_b FROM match_history WHERE game_date=? AND id LIKE 'MANUAL_%'", conn, params=(active_date,))
@@ -1089,7 +1087,17 @@ if menu == "대진표":
                                 assign_points_db(match_id, active_date, t_a, t_b, win_res, False, None, int(score_a), int(score_b))
                                 st.success("완료!"); st.rerun()
 
-                display_wait_counts_db(target_date=active_date)
+                if not matches_check.empty and not agg.empty and '순위' in agg.columns:
+                    st.divider()
+                    st.markdown("### 📊 상세 성적표")
+                    final_table = agg[['순위', 'name', '승점', '승', '패', '무', '대기', '승률', '득점', '득실차', '자격미달']].copy()
+                    final_table['승-무-패'] = final_table.apply(lambda x: f"{int(x['승'])}-{int(x['무'])}-{int(x['패'])}", axis=1)
+                    final_table = final_table[['순위', 'name', '승점', '승-무-패', '대기', '승률', '득점', '득실차', '자격미달']]
+                    final_table.columns = ['순위', '이름', '승점', '승-무-패', '대기', '승률', '득점', '득실차', '자격미달']
+                    def style_disqualified(row): return ['color: #9e9e9e; text-decoration: line-through;'] * len(row) if final_table.loc[row.name, '자격미달'] else [''] * len(row)
+                    styled_table = final_table.drop(columns=['자격미달']).style.apply(style_disqualified, axis=1)
+                    st.dataframe(styled_table, use_container_width=True, hide_index=True)
+
         else:
             view_date = sel_opt.split(" ")[0]
             st.info(f"🔒 {view_date} 과거 기록 (수정 불가)")
@@ -1426,7 +1434,6 @@ elif menu == "이벤트":
                 if view_mode == "개인별":
                     for r_num, round_data in t_data.items():
                         render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name=filter_name, is_event=True, event_id=e_id, target_date=selected_event['event_date'], court_names=evt_court_names)
-                    display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, filter_name)
                 
                 elif view_mode == "라운드별":
                     display_missing_scores(t_data, True, e_id, selected_event['event_date'], uniq_id, all_ex_m, evt_court_names, "전체 보기")
@@ -1556,6 +1563,20 @@ elif menu == "이벤트":
                                 return match_df.iloc[0].to_dict() if not match_df.empty else {'name': str(n), 'gender': '남', 'eff_rating': 5.0, 'is_guest': 1}
                             assign_points_db(match_id, selected_event['event_date'], [get_p_dict(n) for n in a_players], [get_p_dict(n) for n in b_players], win_res, True, e_id, int(score_a), int(score_b))
                             st.success("저장 완료!"); st.rerun()
+
+                if not matches_check.empty and not agg.empty and '순위' in agg.columns:
+                    st.divider()
+                    st.markdown("### 📊 상세 성적표")
+                    final_table = agg[['순위', 'name', '승점', '승', '패', '무', '대기', '승률', '득점', '득실차', '자격미달']].copy()
+                    final_table['승-무-패'] = final_table.apply(lambda x: f"{int(x['승'])}-{int(x['무'])}-{int(x['패'])}", axis=1)
+                    final_table = final_table[['순위', 'name', '승점', '승-무-패', '대기', '승률', '득점', '득실차', '자격미달']]
+                    final_table.columns = ['순위', '이름', '승점', '승-무-패', '대기', '승률', '득점', '득실차', '자격미달']
+                    def style_disqualified(row): return ['color: #9e9e9e; text-decoration: line-through;'] * len(row) if final_table.loc[row.name, '자격미달'] else [''] * len(row)
+                    styled_table = final_table.drop(columns=['자격미달']).style.apply(style_disqualified, axis=1)
+                    st.dataframe(styled_table, use_container_width=True, hide_index=True)
+                    
+            if view_mode == "개인별" and t_data:
+                display_missing_scores(t_data, True, e_id, selected_event['event_date'], f"evt_{e_id}", all_ex_m, evt_court_names, filter_name)
 
 # ----------------------------------------
 # 5. 관리자 메뉴
@@ -1730,6 +1751,13 @@ elif menu == "관리자":
                     e_court_names = [c.strip() for c in e_court_input.split(",") if c.strip()]
                     e_c_cnt = len(e_court_names)
                 
+                e_late_dict, e_leave_dict = {}, {}
+                with st.expander("⏰ 지각/조퇴자 설정 (선택사항)", expanded=False):
+                    e_latecomers = st.multiselect("🏃 지각자 선택", final_selected_e, key="e_latecomers")
+                    for p in e_latecomers: e_late_dict[p] = st.number_input(f"{p}님 합류 라운드", min_value=2, max_value=int(e_r_cnt), value=2, key=f"e_late_{p}")
+                    e_leavers = st.multiselect("👋 조퇴자 선택", [n for n in final_selected_e if n not in e_latecomers], key="e_leavers")
+                    for p in e_leavers: e_leave_dict[p] = st.number_input(f"{p}님 이탈 라운드", min_value=2, max_value=int(e_r_cnt), value=int(e_r_cnt), key=f"e_leave_{p}")
+
                 e_opt, e_sub_opt, e_spec = "기본 (평점 우선)", "기본 (평점 우선)", []
                 if e_play_mode == "복식" and not is_team_match:
                     cx1, cx2 = st.columns(2)
@@ -1776,7 +1804,14 @@ elif menu == "관리자":
                         evt_team_rosters = {'A': [strip_gender(n) for n in str(selected_event.get('team_1_members', '')).split(',') if n], 'B': [strip_gender(n) for n in str(selected_event.get('team_2_members', '')).split(',') if n]} if is_team_match else None
                             
                         new_bracket = {}
-                        for r in range(1, e_r_cnt + 1): new_bracket[str(r)] = generate_single_round(active_e_members_df.copy(), e_c_cnt, e_play_mode, e_opt, e_spec, e_sub_opt, r, new_bracket, team_rosters=evt_team_rosters)
+                        for r in range(1, int(e_r_cnt) + 1):
+                            curr_round_players = []
+                            for n in final_selected_e:
+                                if n in e_late_dict and r < e_late_dict[n]: continue
+                                if n in e_leave_dict and r >= e_leave_dict[n]: continue
+                                curr_round_players.append(n)
+                            round_df = active_e_members_df[active_e_members_df['name'].isin(curr_round_players)]
+                            new_bracket[str(r)] = generate_single_round(round_df.copy(), e_c_cnt, e_play_mode, e_opt, e_spec, e_sub_opt, r, new_bracket, team_rosters=evt_team_rosters)
                         
                         rules = get_point_rules()
                         conn = get_db_conn()
@@ -1810,7 +1845,14 @@ elif menu == "관리자":
                             
                             evt_team_rosters = {'A': [strip_gender(n) for n in str(selected_event.get('team_1_members', '')).split(',') if n], 'B': [strip_gender(n) for n in str(selected_event.get('team_2_members', '')).split(',') if n]} if is_team_match else None
                             new_bracket = {}
-                            for r in range(1, e_r_cnt + 1): new_bracket[str(r)] = generate_single_round(active_e_members_df.copy(), e_c_cnt, e_play_mode, e_opt, e_spec, e_sub_opt, r, new_bracket, team_rosters=evt_team_rosters)
+                            for r in range(1, int(e_r_cnt) + 1):
+                                curr_round_players = []
+                                for n in final_selected_e:
+                                    if n in e_late_dict and r < e_late_dict[n]: continue
+                                    if n in e_leave_dict and r >= e_leave_dict[n]: continue
+                                    curr_round_players.append(n)
+                                round_df = active_e_members_df[active_e_members_df['name'].isin(curr_round_players)]
+                                new_bracket[str(r)] = generate_single_round(round_df.copy(), e_c_cnt, e_play_mode, e_opt, e_spec, e_sub_opt, r, new_bracket, team_rosters=evt_team_rosters)
                             
                             rules = get_point_rules()
                             conn = get_db_conn()
@@ -1834,7 +1876,7 @@ elif menu == "관리자":
                             
                 b_json = selected_event.get('bracket_json')
                 if pd.notna(b_json) and str(b_json).strip() not in ["", "None", "nan"]:
-                    st.markdown("<br><h3 style='color:#1976D2;'>👇 생성된 이벤트 대진표 관리 (라운드 단일 재생성/인원 교체)</h3>", unsafe_allow_html=True)
+                    st.markdown("<br><h3 style='color:#1976D2;'>👇 생성된 이벤트 대진표 관리 (라운드 단일 재생성)</h3>", unsafe_allow_html=True)
                     st.session_state['event_tournament_data'] = json.loads(b_json)
                     e_gen_json = selected_event.get('gen_params_json')
                     e_gen = json.loads(e_gen_json) if e_gen_json and pd.notna(e_gen_json) else None
@@ -1987,6 +2029,13 @@ elif menu == "관리자":
                 court_input = st.text_input("사용 코트 (쉼표 구분)", "1,2", key="reg_c_cnt")
                 reg_court_names = [c.strip() for c in court_input.split(",") if c.strip()]
                 c_cnt = len(reg_court_names)
+                
+            r_late_dict, r_leave_dict = {}, {}
+            with st.expander("⏰ 지각/조퇴자 설정 (선택사항)", expanded=False):
+                r_latecomers = st.multiselect("🏃 지각자 선택", selected_names, key="r_latecomers")
+                for p in r_latecomers: r_late_dict[p] = st.number_input(f"{p}님 합류 라운드", min_value=2, max_value=int(r_cnt), value=2, key=f"r_late_{p}")
+                r_leavers = st.multiselect("👋 조퇴자 선택", [n for n in selected_names if n not in r_latecomers], key="r_leavers")
+                for p in r_leavers: r_leave_dict[p] = st.number_input(f"{p}님 이탈 라운드", min_value=2, max_value=int(r_cnt), value=int(r_cnt), key=f"r_leave_{p}")
             
             if play_mode == "복식":
                 c3, c4 = st.columns(2)
@@ -2030,12 +2079,19 @@ elif menu == "관리자":
                 else:
                     st.session_state.gen_confirm_reg = False
                     st.session_state['match_date'] = m_date 
-                    p_df = full_df[full_df['name'].isin(selected_names)]
                     gen_params = {'r_cnt': r_cnt, 'c_cnt': c_cnt, 'court_names': reg_court_names, 'opt': opt, 'sub_opt': sub_opt, 'play_mode': play_mode, 'special_data': special_data_list, 'selected_names': selected_names}
                     st.session_state['gen_params'] = gen_params
                     st.session_state['tournament_data'] = {}
-                    for r in range(1, r_cnt + 1):
-                        round_result = generate_single_round(p_df, c_cnt, play_mode, opt, special_data_list, sub_opt, r, st.session_state['tournament_data'])
+                    
+                    for r in range(1, int(r_cnt) + 1):
+                        curr_round_players = []
+                        for n in selected_names:
+                            if n in r_late_dict and r < r_late_dict[n]: continue
+                            if n in r_leave_dict and r >= r_leave_dict[n]: continue
+                            curr_round_players.append(n)
+                        
+                        p_df = full_df[full_df['name'].isin(curr_round_players)]
+                        round_result = generate_single_round(p_df.copy(), c_cnt, play_mode, opt, special_data_list, sub_opt, r, st.session_state['tournament_data'])
                         st.session_state['tournament_data'][str(r)] = round_result
                         rules = get_point_rules()
                         wl_id = f"{m_date}_R{r}_Waitlist"
@@ -2062,12 +2118,19 @@ elif menu == "관리자":
                         finally: conn.close()
                         
                         st.session_state['match_date'] = m_date 
-                        p_df = full_df[full_df['name'].isin(selected_names)]
                         gen_params = {'r_cnt': r_cnt, 'c_cnt': c_cnt, 'court_names': reg_court_names, 'opt': opt, 'sub_opt': sub_opt, 'play_mode': play_mode, 'special_data': special_data_list, 'selected_names': selected_names}
                         st.session_state['gen_params'] = gen_params
                         st.session_state['tournament_data'] = {}
-                        for r in range(1, r_cnt + 1):
-                            round_result = generate_single_round(p_df, c_cnt, play_mode, opt, special_data_list, sub_opt, r, st.session_state['tournament_data'])
+                        
+                        for r in range(1, int(r_cnt) + 1):
+                            curr_round_players = []
+                            for n in selected_names:
+                                if n in r_late_dict and r < r_late_dict[n]: continue
+                                if n in r_leave_dict and r >= r_leave_dict[n]: continue
+                                curr_round_players.append(n)
+                            
+                            p_df = full_df[full_df['name'].isin(curr_round_players)]
+                            round_result = generate_single_round(p_df.copy(), c_cnt, play_mode, opt, special_data_list, sub_opt, r, st.session_state['tournament_data'])
                             st.session_state['tournament_data'][str(r)] = round_result
                             rules = get_point_rules()
                             wl_id = f"{m_date}_R{r}_Waitlist"

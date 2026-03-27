@@ -365,29 +365,35 @@ def display_wait_counts_db(target_date=None, event_id=None):
     conn = get_db_conn()
     try:
         if event_id is not None:
-            df = pd.read_sql_query("SELECT name, COUNT(*) as cnt FROM event_points_log WHERE event_id=? AND games=0 GROUP BY name", conn, params=(event_id,))
+            df = pd.read_sql_query("SELECT name, games FROM event_points_log WHERE event_id=?", conn, params=(event_id,))
         else:
-            df = pd.read_sql_query("SELECT name, COUNT(*) as cnt FROM points_log WHERE input_date=? AND games=0 AND source_id NOT LIKE 'MANUAL_%' GROUP BY name", conn, params=(target_date,))
+            df = pd.read_sql_query("SELECT name, games FROM points_log WHERE input_date=? AND source_id NOT LIKE 'MANUAL_%'", conn, params=(target_date,))
     finally: conn.close()
     
-    if not df.empty and df['cnt'].sum() > 0:
-        counts = {row['name']: row['cnt'] for _, row in df.iterrows() if row['cnt'] > 0}
-        if not counts: return
-        st.markdown("<div style='font-size:15px; font-weight:bold; color:#e65100; margin-top:15px; margin-bottom:5px;'>💤 개인별 대기 횟수표</div>", unsafe_allow_html=True)
-        sorted_counts = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+    if not df.empty:
+        stats = {}
+        for _, row in df.iterrows():
+            n = row['name']
+            if n not in stats: stats[n] = {'play': 0, 'wait': 0}
+            if row['games'] == 0: stats[n]['wait'] += 1
+            else: stats[n]['play'] += 1
+            
+        if not stats: return
         
-        # 3열 구조로 변경
-        html = "<table style='width:100%; border-collapse: collapse; text-align:center; font-size:14px; margin-bottom:10px;'>"
-        for i in range(0, len(sorted_counts), 3):
+        st.markdown("<div style='font-size:15px; font-weight:bold; color:#e65100; margin-top:15px; margin-bottom:5px;'>💤 개인별 경기/대기 현황표</div>", unsafe_allow_html=True)
+        sorted_stats = sorted(stats.items(), key=lambda x: (-x[1]['wait'], x[1]['play'], x[0]))
+        
+        html = "<table style='width:100%; border-collapse: collapse; text-align:center; font-size:13px; margin-bottom:10px;'>"
+        for i in range(0, len(sorted_stats), 3):
             html += "<tr>"
             for j in range(3):
-                if i + j < len(sorted_counts):
-                    p = sorted_counts[i+j]
+                if i + j < len(sorted_stats):
+                    p = sorted_stats[i+j]
                     border_left = "border-left:1px dashed #ccc;" if j > 0 else ""
-                    html += f"<td style='padding:8px; border-bottom:1px solid #ddd; {border_left}'><b style='color:#333;'>{p[0]}</b> <span style='color:#d32f2f; font-weight:bold;'>{p[1]}회</span></td>"
+                    html += f"<td style='padding:6px; border-bottom:1px solid #ddd; {border_left}'><b style='color:#333; font-size:14px;'>{p[0]}</b><br><span style='color:#1976d2; font-weight:bold;'>{p[1]['play']}게임</span> / <span style='color:#d32f2f; font-weight:bold;'>{p[1]['wait']}대기</span></td>"
                 else:
                     border_left = "border-left:1px dashed #ccc;" if j > 0 else ""
-                    html += f"<td style='padding:8px; border-bottom:1px solid #ddd; {border_left}'></td>"
+                    html += f"<td style='padding:6px; border-bottom:1px solid #ddd; {border_left}'></td>"
             html += "</tr>"
         html += "</table>"
         st.markdown(f"<div style='background-color:#fff; border-radius:8px; border:1px solid #ccc; padding:5px;'>{html}</div>", unsafe_allow_html=True)
@@ -632,13 +638,28 @@ def generate_single_round(players_df, court_count, play_mode, match_option, spec
         ta_type, ta_rating = get_t_type(ta), sum(p['eff_rating'] for p in ta)
         best_tb, best_tb_idx, best_cost = None, -1, float('inf')
         for i, tb in enumerate(formed_teams):
+            tb_type = get_t_type(tb)
+            tb_rating = sum(p['eff_rating'] for p in tb)
             penalty = 0
             if rest_opt in ["여복 우선", "혼복 우선"]:
-                if ta_type != get_t_type(tb): penalty += 500000
+                if ta_type != tb_type: penalty += 500000
+                
+            # [수정 1] 남녀 대 여여 배제 (강력 페널티)
+            if (ta_type == 'MF' and tb_type == 'FF') or (ta_type == 'FF' and tb_type == 'MF'):
+                penalty += 2000000
+                
+            # [수정 2] 남남 대 남녀는 남녀팀 평점이 1.2 이상 높을 때만 허용
+            if ta_type == 'MM' and tb_type == 'MF':
+                if tb_rating < ta_rating + 1.2:
+                    penalty += 2000000
+            elif ta_type == 'MF' and tb_type == 'MM':
+                if ta_rating < tb_rating + 1.2:
+                    penalty += 2000000
+
             for pa in ta:
                 for pb in tb:
                     if pb['name'] in past_opponents[pa['name']]: penalty += 10000
-            cost = abs(ta_rating - sum(p['eff_rating'] for p in tb)) + penalty
+            cost = abs(ta_rating - tb_rating) + penalty
             if cost < best_cost: best_cost, best_tb, best_tb_idx = cost, tb, i
         if best_tb:
             matches.append({"team_a": ta, "team_b": best_tb, "winner": "입력 대기"})
@@ -1690,6 +1711,7 @@ elif menu == "이벤트":
                 st.divider()
                 st.markdown("### 📊 상세 성적표")
                 
+                # 엑셀에서 받아온 성별 데이터 추출
                 e_gen_params = json.loads(selected_event.get('gen_params_json') or '{}')
                 gender_map = e_gen_params.get('gender_map', {})
                 agg['성별'] = agg['name'].map(lambda x: gender_map.get(x, '남'))
@@ -1740,7 +1762,7 @@ elif menu == "이벤트":
             display_wait_counts_db(event_id=e_id)
 
 # ----------------------------------------
-# 5. 관리자 메뉴
+# 3. 관리자 메뉴
 # ----------------------------------------
 elif menu == "관리자":
     st.subheader("⚙️ 관리자 시스템")
@@ -2180,7 +2202,7 @@ elif menu == "관리자":
                             conn.cursor().execute("UPDATE members SET is_guest=0 WHERE name=?", (up_g,))
                             conn.commit()
                         finally: conn.close()
-                        retro_calculate_points_for_user(up_g); st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
+                        st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
                         
                 st.divider()
                 st.markdown("##### ❌ 회원 삭제")

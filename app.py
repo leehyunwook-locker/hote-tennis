@@ -118,6 +118,12 @@ def init_db():
             ("events", "participants", "TEXT"),
             ("events", "bracket_json", "TEXT"),
             ("events", "gen_params_json", "TEXT"),
+            ("event_matches", "round", "INTEGER DEFAULT 0"),
+            ("event_matches", "court", "INTEGER DEFAULT 0"),
+            ("event_matches", "score_a", "INTEGER DEFAULT 0"),
+            ("event_matches", "score_b", "INTEGER DEFAULT 0"),
+            ("event_matches", "team_a_pos", "TEXT DEFAULT '미지정'"),
+            ("event_matches", "team_b_pos", "TEXT DEFAULT '미지정'"),
             ("event_points_log", "score_won", "INTEGER DEFAULT 0"),
             ("event_points_log", "score_lost", "INTEGER DEFAULT 0")]:
             add_column_safe(t, c_name, defs)
@@ -467,10 +473,16 @@ def generate_single_round(players_df, court_count, play_mode, match_option, spec
             ta, tb = [p['name'] for p in match['team_a']], [p['name'] for p in match['team_b']]
             for n in ta + tb:
                 if n in play_counts: play_counts[n] += 1
-            if len(ta) == 2: past_partners[ta[0]].add(ta[1]); past_partners[ta[1]].add(ta[0])
-            if len(tb) == 2: past_partners[tb[0]].add(tb[1]); past_partners[tb[1]].add(tb[0])
+            if len(ta) == 2:
+                if ta[0] in past_partners: past_partners[ta[0]].add(ta[1])
+                if ta[1] in past_partners: past_partners[ta[1]].add(ta[0])
+            if len(tb) == 2:
+                if tb[0] in past_partners: past_partners[tb[0]].add(tb[1])
+                if tb[1] in past_partners: past_partners[tb[1]].add(tb[0])
             for pa in ta:
-                for pb in tb: past_opponents[pa].add(pb); past_opponents[pb].add(pa)
+                for pb in tb:
+                    if pa in past_opponents: past_opponents[pa].add(pb)
+                    if pb in past_opponents: past_opponents[pb].add(pa)
                 
     prev_r_num = str(int(current_r_num) - 1)
     prev_waiters = [w['name'] for w in all_rounds_data.get(prev_r_num, {}).get('waitlist', [])]
@@ -788,7 +800,7 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
                                                   (m_id_check, target_date, ta_n_display, tb_n_display, win_res, int(score_a), int(score_b), pa_val, pb_val))
                         conn.commit()
                     finally: conn.close()
-                    assign_points_db(m_id_check, target_date if not is_event else selected_event['event_date'], team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
+                    assign_points_db(m_id_check, target_date if not is_event else target_date, team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
                     st.session_state[edit_mode_key] = False; st.success("저장 완료!"); st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1451,7 +1463,7 @@ if menu == "정규리그":
                                 for item in data['list']: st.write(f"with **{item['partner']}** ➔ {item['res']} ({item['score']})")
 
 # ----------------------------------------
-# 2. 이벤트 
+# 2. 이벤트
 # ----------------------------------------
 elif menu == "이벤트":
     st.markdown("<h3 style='color:#e65100; font-weight:900;'>🎉 이벤트 대진표</h3>", unsafe_allow_html=True)
@@ -1651,9 +1663,7 @@ elif menu == "이벤트":
                 st.divider()
                 st.markdown("### 📊 상세 성적표")
                 
-                # 엑셀에서 받아온 성별 데이터 추출
                 e_gen_params = json.loads(selected_event.get('gen_params_json') or '{}')
-                c_ratings = e_gen_params.get('custom_ratings', {})
                 gender_map = e_gen_params.get('gender_map', {})
                 agg['성별'] = agg['name'].map(lambda x: gender_map.get(x, '남'))
                 
@@ -1815,27 +1825,26 @@ elif menu == "관리자":
                 selected_event = events_df.iloc[idx]
                 e_id, is_team_match = int(selected_event['id']), "팀 대항전" in selected_event.get('event_type', '')
                 
-                e_gen_params = json.loads(selected_event.get('gen_params_json') or '{}')
-                custom_ratings = e_gen_params.get('custom_ratings', {})
-                gender_map = e_gen_params.get('gender_map', {})
-                part_str = selected_event.get('participants', "")
-                raw_players = [x.strip() for x in part_str.split(",") if x.strip()] if part_str else []
-                
-                with st.expander("✏️ 선택한 이벤트 정보 및 참가자 추가/수정", expanded=False):
+                with st.expander("✏️ 선택한 이벤트 정보 및 참가자 수정", expanded=False):
                     new_e_name = st.text_input("이벤트 이름 변경", selected_event['event_name'], key="mod_e_name")
                     try: cur_d = datetime.strptime(selected_event['event_date'], "%Y-%m-%d")
                     except: cur_d = datetime.now()
                     new_e_date = st.date_input("이벤트 날짜 변경", cur_d, key="mod_e_date").strftime("%Y-%m-%d")
                     
+                    curr_parts = [x.strip() for x in str(selected_event.get('participants', '')).split(",") if x.strip()]
+                    e_gen_params_tmp = json.loads(selected_event.get('gen_params_json') or '{}')
+                    c_ratings_tmp = e_gen_params_tmp.get('custom_ratings', {})
+                    g_map_tmp = e_gen_params_tmp.get('gender_map', {})
+                    
                     if 'edit_p_df' not in st.session_state or st.session_state.get('last_e_id') != e_id:
                         st.session_state['last_e_id'] = e_id
                         p_list = []
-                        for n in raw_players:
-                            p_list.append({"이름": n, "성별": gender_map.get(n, "남"), "평점": custom_ratings.get(n, 5.0)})
+                        for n in curr_parts:
+                            p_list.append({"이름": n, "성별": g_map_tmp.get(n, "남"), "평점": c_ratings_tmp.get(n, 5.0)})
                         if not p_list: p_list = [{"이름": "", "성별": "남", "평점": 5.0}]
                         st.session_state['edit_p_df'] = pd.DataFrame(p_list)
                         
-                    st.caption("참가자를 자유롭게 추가하거나 빼고 저장하세요.")
+                    st.caption("참가자를 추가/제거하거나 평점을 수정하세요.")
                     mod_df = st.data_editor(
                         st.session_state['edit_p_df'], 
                         num_rows="dynamic",
@@ -1847,18 +1856,25 @@ elif menu == "관리자":
                         new_part_str = ",".join([str(r['이름']).strip() for _, r in mod_df.iterrows() if pd.notna(r['이름']) and str(r['이름']).strip()])
                         new_c_ratings = {str(r['이름']).strip(): float(r['평점']) for _, r in mod_df.iterrows() if pd.notna(r['이름']) and str(r['이름']).strip()}
                         new_g_map = {str(r['이름']).strip(): str(r['성별']) for _, r in mod_df.iterrows() if pd.notna(r['이름']) and str(r['이름']).strip()}
-                        e_gen_params['custom_ratings'] = new_c_ratings
-                        e_gen_params['gender_map'] = new_g_map
+                        e_gen_params_tmp['custom_ratings'] = new_c_ratings
+                        e_gen_params_tmp['gender_map'] = new_g_map
                         conn = get_db_conn()
                         try:
-                            conn.cursor().execute("UPDATE events SET event_name=?, event_date=?, participants=?, gen_params_json=? WHERE id=?", (new_e_name, new_e_date, new_part_str, json.dumps(e_gen_params), e_id))
+                            conn.cursor().execute("UPDATE events SET event_name=?, event_date=?, participants=?, gen_params_json=? WHERE id=?", (new_e_name, new_e_date, new_part_str, json.dumps(e_gen_params_tmp), e_id))
                             conn.commit()
                         finally: conn.close()
                         st.success("수정 완료! 새로고침합니다."); st.rerun()
 
+                e_gen_params = json.loads(selected_event.get('gen_params_json') or '{}')
+                custom_ratings = e_gen_params.get('custom_ratings', {})
+                gender_map = e_gen_params.get('gender_map', {})
+                part_str = selected_event.get('participants', "")
+                raw_players = [x.strip() for x in part_str.split(",") if x.strip()] if part_str else []
+                
                 e_member_dicts = []
                 for n in raw_players:
-                    e_member_dicts.append({"name": n, "gender": gender_map.get(n, "남"), "eff_rating": custom_ratings.get(n, 5.0)})
+                    rating = custom_ratings.get(n, 5.0)
+                    e_member_dicts.append({"name": n, "gender": gender_map.get(n, "남"), "eff_rating": rating}) 
                 
                 active_e_members_df = pd.DataFrame(e_member_dicts)
                 final_selected_e = active_e_members_df['name'].tolist() if not active_e_members_df.empty else []

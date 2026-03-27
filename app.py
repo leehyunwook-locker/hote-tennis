@@ -361,42 +361,40 @@ def display_missing_scores(t_data, is_event, event_id, target_date, uniq_id, all
                     render_match_card(r_num, c_idx, m, False, filter_name, is_event, event_id, target_date, c_name, f"{uniq_id}_m", all_ex_m, auto_expand=False, next_up_matches=next_up_matches)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-def display_wait_counts_db(target_date=None, event_id=None):
-    conn = get_db_conn()
-    try:
-        if event_id is not None:
-            df = pd.read_sql_query("SELECT name, games FROM event_points_log WHERE event_id=?", conn, params=(event_id,))
-        else:
-            df = pd.read_sql_query("SELECT name, games FROM points_log WHERE input_date=? AND source_id NOT LIKE 'MANUAL_%'", conn, params=(target_date,))
-    finally: conn.close()
-    
-    if not df.empty:
-        stats = {}
-        for _, row in df.iterrows():
-            n = row['name']
+def display_assigned_counts(t_data):
+    if not t_data: return
+    stats = {}
+    for r_num, r_data in t_data.items():
+        for m in r_data.get('matches', []):
+            if m['winner'] == '취소': continue
+            for p in m.get('team_a', []) + m.get('team_b', []):
+                n = p['name']
+                if n not in stats: stats[n] = {'play': 0, 'wait': 0}
+                stats[n]['play'] += 1
+        for w in r_data.get('waitlist', []):
+            n = w['name']
             if n not in stats: stats[n] = {'play': 0, 'wait': 0}
-            if row['games'] == 0: stats[n]['wait'] += 1
-            else: stats[n]['play'] += 1
+            stats[n]['wait'] += 1
             
-        if not stats: return
-        
-        st.markdown("<div style='font-size:15px; font-weight:bold; color:#e65100; margin-top:15px; margin-bottom:5px;'>💤 개인별 경기/대기 현황표</div>", unsafe_allow_html=True)
-        sorted_stats = sorted(stats.items(), key=lambda x: (-x[1]['wait'], x[1]['play'], x[0]))
-        
-        html = "<table style='width:100%; border-collapse: collapse; text-align:center; font-size:13px; margin-bottom:10px;'>"
-        for i in range(0, len(sorted_stats), 3):
-            html += "<tr>"
-            for j in range(3):
-                if i + j < len(sorted_stats):
-                    p = sorted_stats[i+j]
-                    border_left = "border-left:1px dashed #ccc;" if j > 0 else ""
-                    html += f"<td style='padding:6px; border-bottom:1px solid #ddd; {border_left}'><b style='color:#333; font-size:14px;'>{p[0]}</b><br><span style='color:#1976d2; font-weight:bold;'>{p[1]['play']}게임</span> / <span style='color:#d32f2f; font-weight:bold;'>{p[1]['wait']}대기</span></td>"
-                else:
-                    border_left = "border-left:1px dashed #ccc;" if j > 0 else ""
-                    html += f"<td style='padding:6px; border-bottom:1px solid #ddd; {border_left}'></td>"
-            html += "</tr>"
-        html += "</table>"
-        st.markdown(f"<div style='background-color:#fff; border-radius:8px; border:1px solid #ccc; padding:5px;'>{html}</div>", unsafe_allow_html=True)
+    if not stats: return
+    
+    st.markdown("<div style='font-size:15px; font-weight:bold; color:#e65100; margin-top:15px; margin-bottom:5px;'>💤 개인별 배정 현황표 (전체 라운드 기준)</div>", unsafe_allow_html=True)
+    sorted_stats = sorted(stats.items(), key=lambda x: (-x[1]['wait'], x[1]['play'], x[0]))
+    
+    html = "<table style='width:100%; border-collapse: collapse; text-align:center; font-size:13px; margin-bottom:10px;'>"
+    for i in range(0, len(sorted_stats), 3):
+        html += "<tr>"
+        for j in range(3):
+            if i + j < len(sorted_stats):
+                p = sorted_stats[i+j]
+                border_left = "border-left:1px dashed #ccc;" if j > 0 else ""
+                html += f"<td style='padding:6px; border-bottom:1px solid #ddd; {border_left}'><b style='color:#333; font-size:14px;'>{p[0]}</b><br><span style='color:#1976d2; font-weight:bold;'>{p[1]['play']}게임</span> / <span style='color:#d32f2f; font-weight:bold;'>{p[1]['wait']}대기</span></td>"
+            else:
+                border_left = "border-left:1px dashed #ccc;" if j > 0 else ""
+                html += f"<td style='padding:6px; border-bottom:1px solid #ddd; {border_left}'></td>"
+        html += "</tr>"
+    html += "</table>"
+    st.markdown(f"<div style='background-color:#fff; border-radius:8px; border:1px solid #ccc; padding:5px;'>{html}</div>", unsafe_allow_html=True)
 
 # ==========================================
 # 2단계: 승점 계산 및 매칭 로직
@@ -1247,7 +1245,7 @@ if menu == "정규리그":
                         styled_table = final_table.drop(columns=['자격미달']).style.apply(style_disqualified, axis=1)
                         st.dataframe(styled_table, use_container_width=True, hide_index=True)
                         
-                    display_wait_counts_db(target_date=active_date)
+                    display_assigned_counts(t_data)
             else:
                 view_date = sel_opt.split(" ")[0]
                 st.info(f"🔒 {view_date} 과거 기록 (수정 불가)")
@@ -1759,10 +1757,10 @@ elif menu == "이벤트":
                         st.dataframe(styled_f, use_container_width=True, hide_index=True)
                     else: st.info("여자 참가자가 없습니다.")
                     
-            display_wait_counts_db(event_id=e_id)
+            display_assigned_counts(t_data)
 
 # ----------------------------------------
-# 3. 관리자 메뉴
+# 5. 관리자 메뉴
 # ----------------------------------------
 elif menu == "관리자":
     st.subheader("⚙️ 관리자 시스템")
@@ -1770,7 +1768,24 @@ elif menu == "관리자":
         if st.text_input("비밀번호 (초기: 1234)", type="password") == get_admin_pwd(): st.session_state['admin_logged_in'] = True; st.rerun()
                 
     if st.session_state['admin_logged_in']:
-        if st.button("로그아웃"): st.session_state['admin_logged_in'] = False; st.rerun()
+        c_lo1, c_lo2 = st.columns([8, 2])
+        with c_lo2:
+            if st.button("로그아웃", use_container_width=True): st.session_state['admin_logged_in'] = False; st.rerun()
+            
+        with st.expander("🔐 관리자 비밀번호 변경", expanded=False):
+            c_pw1, c_pw2 = st.columns([3, 1])
+            with c_pw1: new_pwd = st.text_input("새로운 비밀번호", type="password", key="new_admin_pwd", label_visibility="collapsed")
+            with c_pw2: 
+                if st.button("변경", type="primary", use_container_width=True, key="btn_change_pwd"):
+                    if new_pwd:
+                        conn = get_db_conn()
+                        try:
+                            conn.cursor().execute("UPDATE settings SET value=? WHERE key='admin_password'", (new_pwd,))
+                            conn.commit()
+                        finally: conn.close()
+                        st.success("비밀번호가 변경되었습니다.")
+                    else:
+                        st.error("비밀번호를 입력하세요.")
         
         tab_reg, tab_evt = st.tabs(["🎾 정규 리그 관리", "🎉 이벤트/교류전 관리"])
         
@@ -2003,6 +2018,9 @@ elif menu == "관리자":
                             e_gen_params['c_cnt'] = e_c_cnt
                             e_gen_params['court_names'] = e_court_names
                             e_gen_params['play_mode'] = e_play_mode
+                            e_gen_params['opt'] = e_opt
+                            e_gen_params['sub_opt'] = e_sub_opt
+                            e_gen_params['spec'] = e_spec
                             e_gen_params['selected_names'] = final_selected_e
                             conn.cursor().execute("UPDATE events SET bracket_json=?, gen_params_json=? WHERE id=?", (json.dumps(new_bracket, default=str), json.dumps(e_gen_params), e_id))
                             conn.commit()
@@ -2043,6 +2061,9 @@ elif menu == "관리자":
                                 e_gen_params['c_cnt'] = e_c_cnt
                                 e_gen_params['court_names'] = e_court_names
                                 e_gen_params['play_mode'] = e_play_mode
+                                e_gen_params['opt'] = e_opt
+                                e_gen_params['sub_opt'] = e_sub_opt
+                                e_gen_params['spec'] = e_spec
                                 e_gen_params['selected_names'] = final_selected_e
                                 conn.cursor().execute("UPDATE events SET bracket_json=?, gen_params_json=? WHERE id=?", (json.dumps(new_bracket, default=str), json.dumps(e_gen_params), e_id))
                                 conn.commit()
@@ -2202,7 +2223,7 @@ elif menu == "관리자":
                             conn.cursor().execute("UPDATE members SET is_guest=0 WHERE name=?", (up_g,))
                             conn.commit()
                         finally: conn.close()
-                        st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
+                        retro_calculate_points_for_user(up_g); st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
                         
                 st.divider()
                 st.markdown("##### ❌ 회원 삭제")
@@ -2290,72 +2311,4 @@ elif menu == "관리자":
                     st.session_state['tournament_data'] = {}
                     
                     for r in range(1, int(r_cnt) + 1):
-                        curr_round_players = []
-                        for n in selected_names:
-                            if n in r_late_dict and r < r_late_dict[n]: continue
-                            if n in r_leave_dict and r >= r_leave_dict[n]: continue
-                            curr_round_players.append(n)
-                        
-                        p_df = full_df[full_df['name'].isin(curr_round_players)]
-                        round_result = generate_single_round(p_df.copy(), c_cnt, play_mode, opt, special_data_list, sub_opt, r, st.session_state['tournament_data'])
-                        st.session_state['tournament_data'][str(r)] = round_result
-                        rules = get_point_rules()
-                        wl_id = f"{m_date}_R{r}_Waitlist"
-                        conn = get_db_conn()
-                        try:
-                            conn.cursor().execute("DELETE FROM points_log WHERE source_id=?", (wl_id,))
-                            for w in round_result['waitlist']:
-                                if not w.get('is_guest', False): conn.cursor().execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", (wl_id, w['name'], m_date, rules.get('대기자', {'win':2})['win'], 0))
-                            conn.commit()
-                        finally: conn.close()
-                    save_active_tournament(m_date, st.session_state['tournament_data'], gen_params)
-                    st.success("생성 완료!")
-
-            if st.session_state.gen_confirm_reg:
-                st.markdown("<div class='nowrap-text' style='text-align:center; font-weight:bold; font-size:14px; color:#d32f2f; margin-bottom:5px;'>⚠️ 이미 대진표가 존재합니다. 삭제하고 다시 생성할까요?</div>", unsafe_allow_html=True)
-                c_yes, c_no = st.columns([1, 1])
-                with c_yes:
-                    if st.button("확인", use_container_width=True, key="btn_reg_gen_confirm"):
-                        conn = get_db_conn()
-                        try:
-                            conn.cursor().execute("DELETE FROM match_history WHERE game_date=?", (m_date,))
-                            conn.cursor().execute("DELETE FROM points_log WHERE input_date=? AND source_id LIKE '%_R%'", (m_date,))
-                            conn.commit()
-                        finally: conn.close()
-                        
-                        st.session_state['match_date'] = m_date 
-                        gen_params = {'r_cnt': r_cnt, 'c_cnt': c_cnt, 'court_names': reg_court_names, 'opt': opt, 'sub_opt': sub_opt, 'play_mode': play_mode, 'special_data': special_data_list, 'selected_names': selected_names}
-                        st.session_state['gen_params'] = gen_params
-                        st.session_state['tournament_data'] = {}
-                        
-                        for r in range(1, int(r_cnt) + 1):
-                            curr_round_players = []
-                            for n in selected_names:
-                                if n in r_late_dict and r < r_late_dict[n]: continue
-                                if n in r_leave_dict and r >= r_leave_dict[n]: continue
-                                curr_round_players.append(n)
-                            
-                            p_df = full_df[full_df['name'].isin(curr_round_players)]
-                            round_result = generate_single_round(p_df.copy(), c_cnt, play_mode, opt, special_data_list, sub_opt, r, st.session_state['tournament_data'])
-                            st.session_state['tournament_data'][str(r)] = round_result
-                            rules = get_point_rules()
-                            wl_id = f"{m_date}_R{r}_Waitlist"
-                            conn = get_db_conn()
-                            try:
-                                conn.cursor().execute("DELETE FROM points_log WHERE source_id=?", (wl_id,))
-                                for w in round_result['waitlist']:
-                                    if not w.get('is_guest', False): conn.cursor().execute("INSERT INTO points_log (source_id, name, input_date, points, games) VALUES (?, ?, ?, ?, ?)", (wl_id, w['name'], m_date, rules.get('대기자', {'win':2})['win'], 0))
-                                conn.commit()
-                            finally: conn.close()
-                        save_active_tournament(m_date, st.session_state['tournament_data'], gen_params)
-                        st.session_state.gen_confirm_reg = False
-                        st.success("생성 완료!"); st.rerun()
-                with c_no:
-                    if st.button("취소", use_container_width=True, key="btn_reg_gen_cancel"):
-                        st.session_state.gen_confirm_reg = False
-                        st.rerun()
-
-            if st.session_state['tournament_data'] and not st.session_state.gen_confirm_reg:
-                st.markdown("<br><h3 style='color:#1976D2;'>👇 생성된 정규 대진표 관리 (라운드 단일 재생성)</h3>", unsafe_allow_html=True)
-                for r_num, round_data in st.session_state['tournament_data'].items():
-                    render_horizontal_bracket(r_num, round_data, is_admin=True, filter_name="전체 보기", target_date=m_date, court_names=reg_court_names)
+                        curr_round_players =

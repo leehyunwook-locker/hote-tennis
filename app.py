@@ -276,10 +276,12 @@ def render_realtime_podium(pts_df, matches_df, min_games=1, title="🏆 실시�
     agg['패'] = agg['name'].map(lambda x: wl_dict.get(x, {}).get('패', 0)).fillna(0).astype(int)
     agg['득점'] = agg['name'].map(lambda x: wl_dict.get(x, {}).get('득점', 0)).fillna(0).astype(int)
     agg['실점'] = agg['name'].map(lambda x: wl_dict.get(x, {}).get('실점', 0)).fillna(0).astype(int)
+
     agg['득실차'] = agg['득점'] - agg['실점']
     
     wait_counts = pts_df[pts_df['games'] == 0].groupby('name').size().to_dict()
     agg['대기'] = agg['name'].map(lambda x: wait_counts.get(x, 0)).fillna(0).astype(int)
+    
     agg['자격미달'] = agg['경기수'] < min_games
 
     agg = agg.sort_values(by=['자격미달', '승점', '득실차', '승', '패'], ascending=[True, False, False, False, True]).reset_index(drop=True)
@@ -374,7 +376,6 @@ def display_wait_counts_db(target_date=None, event_id=None):
         st.markdown("<div style='font-size:15px; font-weight:bold; color:#e65100; margin-top:15px; margin-bottom:5px;'>💤 개인별 대기 횟수표</div>", unsafe_allow_html=True)
         sorted_counts = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
         
-        # 3열 구조로 변경
         html = "<table style='width:100%; border-collapse: collapse; text-align:center; font-size:14px; margin-bottom:10px;'>"
         for i in range(0, len(sorted_counts), 3):
             html += "<tr>"
@@ -432,6 +433,7 @@ def assign_points_db(match_id, target_date, team_a, team_b, result, is_event=Fal
     conn = get_db_conn()
     try:
         c = conn.cursor()
+        rules = get_point_rules()
         score_a, score_b = int(score_a), int(score_b)
         
         if is_event: c.execute("DELETE FROM event_points_log WHERE match_id=?", (match_id,))
@@ -493,9 +495,10 @@ def generate_single_round(players_df, court_count, play_mode, match_option, spec
     prev_waiters = [w['name'] for w in all_rounds_data.get(prev_r_num, {}).get('waitlist', [])]
 
     def waitlist_sort_key(x):
-        # missed 1회당 2판 뛴 것으로 간주하여 늦게 온 사람이 더 대기하게 만듦 (정참석자 혜택)
-        missed = (current_r_num - 1) - rounds_present.get(x['name'], 0)
-        eff_play = play_counts[x['name']] + (missed * 2.0)
+        # missed: 지각/조퇴로 인해 해당 라운드까지 결석한 횟수
+        missed = (int(current_r_num) - 1) - rounds_present.get(x['name'], 0)
+        # 지각/조퇴자는 결석 1회당 0.5게임 뛴 것으로 간주하여, 도착 시 우선적으로 뛸 수 있도록 배려 (공평한 게임수)
+        eff_play = play_counts[x['name']] + (missed * 0.5)
         if x['name'] in prev_waiters:
             eff_play -= 1000 
         return (eff_play, x['eff_rating'])
@@ -810,7 +813,7 @@ def render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, even
                                                   (m_id_check, target_date, ta_n_display, tb_n_display, win_res, int(score_a), int(score_b), pa_val, pb_val))
                         conn.commit()
                     finally: conn.close()
-                    assign_points_db(m_id_check, target_date if not is_event else target_date, team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
+                    assign_points_db(m_id_check, target_date if not is_event else selected_event['event_date'], team_a, team_b, win_res, is_event, event_id, int(score_a), int(score_b))
                     st.session_state[edit_mode_key] = False; st.success("저장 완료!"); st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -830,24 +833,23 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
             
     if filter_name != "전체 보기" and not is_my_match_exist: return False
 
-    has_unentered = False
-    if filter_name != "전체 보기":
-        has_unentered = any(m['winner'] == '입력 대기' for c_idx, m in filtered_matches)
-
+    has_unentered = any(m['winner'] == '입력 대기' for c_idx, m in filtered_matches)
     uniq_id = f"evt_{event_id}" if is_event else f"reg_{target_date}"
     
     if filter_name != "전체 보기":
+        round_status = ""
         if has_unentered:
-            title_text = f"🏆 {r_num} 라운드 ({round_data['option']}) - 🚨 점수 미등록"
+            title_text = f"🏆 {r_num} 라운드 ({round_data['option']}) - 🚨 점수등록 안된 게임 있음"
         else:
             title_text = f"🏆 {r_num} 라운드 ({round_data['option']}) - ✅ 입력 완료"
-        auto_expand = False
     else:
-        auto_expand = False
         round_status = " [💤 휴식]" if is_my_waitlist else ""
-        title_text = f"🏆 {r_num} 라운드 ({round_data['option']}){round_status}"
+        if has_unentered:
+            title_text = f"🏆 {r_num} 라운드 ({round_data['option']}){round_status} - 🚨 점수등록 안된 게임 있음"
+        else:
+            title_text = f"🏆 {r_num} 라운드 ({round_data['option']}){round_status}"
 
-    with st.expander(title_text, expanded=auto_expand):
+    with st.expander(title_text, expanded=False):
         if filter_name != "전체 보기" and has_unentered:
             st.markdown("<div style='margin-top:-10px; margin-bottom:10px;'><span style='color:#d32f2f; font-weight:900;'>🚨 아래를 클릭하여 점수를 입력하세요</span></div>", unsafe_allow_html=True)
             
@@ -865,7 +867,7 @@ def render_horizontal_bracket(r_num, round_data, is_admin=False, filter_name="�
 
         for c_idx, match in filtered_matches:
             c_name = court_names[c_idx] if c_idx < len(court_names) else str(c_idx + 1)
-            render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, event_id, target_date, c_name, uniq_id, all_ex_m, auto_expand, next_up_matches)
+            render_match_card(r_num, c_idx, match, is_admin, filter_name, is_event, event_id, target_date, c_name, uniq_id, all_ex_m, False, next_up_matches)
         
         if is_admin:
             regen_mode_key = f"regen_mode_{r_num}_{uniq_id}"
@@ -1673,9 +1675,7 @@ elif menu == "이벤트":
                 st.divider()
                 st.markdown("### 📊 상세 성적표")
                 
-                # 엑셀에서 받아온 성별 데이터 추출
                 e_gen_params = json.loads(selected_event.get('gen_params_json') or '{}')
-                c_ratings = e_gen_params.get('custom_ratings', {})
                 gender_map = e_gen_params.get('gender_map', {})
                 agg['성별'] = agg['name'].map(lambda x: gender_map.get(x, '남'))
                 
@@ -2165,7 +2165,7 @@ elif menu == "관리자":
                             conn.cursor().execute("UPDATE members SET is_guest=0 WHERE name=?", (up_g,))
                             conn.commit()
                         finally: conn.close()
-                        retro_calculate_points_for_user(up_g); st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
+                        st.success(f"🎉 {up_g}님이 정회원으로 승급되었습니다!"); st.rerun()
                         
                 st.divider()
                 st.markdown("##### ❌ 회원 삭제")
